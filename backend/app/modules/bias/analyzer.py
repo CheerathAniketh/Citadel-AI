@@ -1,0 +1,234 @@
+import pandas as pd
+
+# Known label mappings for common encoded columns
+LABEL_MAPS = {
+    "sex":    {0: "Female", 1: "Male", "0": "Female", "1": "Male"},
+    "gender": {0: "Female", 1: "Male", "0": "Female", "1": "Male"},
+    "race": {
+        0: "Amer-Indian-Eskimo", 1: "Black", 2: "Asian-Pac-Islander",
+        3: "Other", 4: "White",
+        "0": "Amer-Indian-Eskimo", "1": "Black", "2": "Asian-Pac-Islander",
+        "3": "Other", "4": "White",
+    },
+    "income": {0: "<=50K", 1: ">50K", "0": "<=50K", "1": ">50K"},
+}
+
+POSITIVE_VALUES = {
+    'yes', 'true', '1', 'hired', 'approved', 'positive',
+    '>50k', '>50k.', 'accept', 'accepted', 'pass', 'grant', 'granted'
+}
+
+POSITIVE_LABELS = {
+    "yes", "hired", "approved", "true", "1", "accept",
+    "accepted", "grant", "granted", ">50k", ">50k."
+}
+
+
+def decode_group_label(sensitive_col, value):
+    col = sensitive_col.lower()
+    mapping = LABEL_MAPS.get(col)
+    if mapping and value in mapping:
+        return mapping[value]
+    return str(value)
+
+
+def _resolve_target(series):
+    """Convert any target column to a binary int Series (0/1)."""
+    if series.dtype == object or str(series.dtype) == 'string':
+        return series.astype(str).str.strip().str.lower().apply(
+            lambda x: 1 if x in POSITIVE_VALUES else 0
+        )
+    return pd.to_numeric(series, errors='coerce').fillna(0).astype(int)
+
+
+def get_group_stats(df, target_col, sensitive_col):
+    target = _resolve_target(df[target_col])
+    stats = {}
+    for group in df[sensitive_col].unique():
+        mask = df[sensitive_col] == group
+        label = decode_group_label(sensitive_col, group)
+        group_target = target[mask]
+        if len(group_target) == 0:
+            continue
+        stats[label] = {
+            "count": int(mask.sum()),
+            "positive_rate": round(float(group_target.mean()), 4)
+        }
+    return stats
+
+
+def calculate_spd(group_stats):
+    rates = [
+        v.get("positive_rate")
+        for v in group_stats.values()
+        if v.get("positive_rate") is not None and pd.notna(v.get("positive_rate"))
+    ]
+    if not rates:
+        return 0.0
+    return round(max(rates) - min(rates), 4)
+
+
+def calculate_di(group_stats):
+    rates = [
+        v.get("positive_rate")
+        for v in group_stats.values()
+        if v.get("positive_rate") is not None and pd.notna(v.get("positive_rate"))
+    ]
+    if not rates:
+        return 0.0
+    max_rate = max(rates)
+    return round(min(rates) / max_rate, 4) if max_rate > 0 else 0.0
+
+
+def get_severity(spd, di):
+    if di < 0.6 or spd > 0.3:
+        return "high"
+    elif di < 0.8 or spd > 0.1:
+        return "medium"
+    return "low"
+
+
+def analyze_bias(df, target_col, sensitive_col):
+    df = df.copy()
+
+    # Encode string target to binary
+    if pd.api.types.is_string_dtype(df[target_col]) or df[target_col].dtype == object:
+        unique_vals = df[target_col].dropna().unique()
+        pos_label = next(
+            (v for v in unique_vals if str(v).strip().lower() in POSITIVE_LABELS),
+            unique_vals[0]
+        )
+        df[target_col] = (
+            df[target_col].astype(str).str.strip().str.lower()
+            == str(pos_label).strip().lower()
+        ).astype(int)
+
+    group_stats = get_group_stats(df, target_col, sensitive_col)
+    spd = calculate_spd(group_stats)
+    di = calculate_di(group_stats)
+
+    clean_stats = {
+        str(group): {
+            "count": int(vals["count"]),
+            "positive_rate": float(vals["positive_rate"])
+        }
+        for group, vals in group_stats.items()
+    }
+
+    return {
+        "group_stats": clean_stats,
+        "spd": float(spd),
+        "di": float(di),
+        "bias_detected": bool(spd > 0.1 or di < 0.8),
+        "severity": get_severity(spd, di)
+    }
+
+
+def compute_intersectionality(df, target_col, sensitive_col, sensitive_col_2):
+    """
+    Compute approval rates for every (col1 × col2) subgroup combination.
+    Skips if either sensitive column has more than 10 unique values.
+    """
+    if df[sensitive_col].nunique() > 10 or df[sensitive_col_2].nunique() > 10:
+        return None
+
+    df = df.copy()
+    df['__target__'] = _resolve_target(df[target_col])
+
+    col1_vals = sorted(df[sensitive_col].unique(), key=lambda x: str(x))
+    col2_vals = sorted(df[sensitive_col_2].unique(), key=lambda x: str(x))
+
+    col1_labels = [decode_group_label(sensitive_col, v) for v in col1_vals]
+    col2_labels = [decode_group_label(sensitive_col_2, v) for v in col2_vals]
+
+    groups = {}
+    matrix = {}
+
+    for i, v1 in enumerate(col1_vals):
+        l1 = col1_labels[i]
+        matrix[l1] = {}
+        for j, v2 in enumerate(col2_vals):
+            l2 = col2_labels[j]
+            mask = (df[sensitive_col] == v1) & (df[sensitive_col_2] == v2)
+            count = int(mask.sum())
+
+            if count < 10:
+                rate = None
+            else:
+                rate = round(float(df.loc[mask, '__target__'].mean()), 4)
+
+            key = f"{l1} × {l2}"
+            groups[key] = {"count": count, "positive_rate": rate}
+            matrix[l1][l2] = rate
+
+    valid = {k: v for k, v in groups.items() if v["positive_rate"] is not None}
+
+    return {
+        "col1": sensitive_col,
+        "col2": sensitive_col_2,
+        "col1_values": col1_labels,
+        "col2_values": col2_labels,
+        "groups": groups,
+        "matrix": matrix,
+        "valid_count": len(valid),
+    }
+
+
+def compute_eod(y_test, y_pred, sensitive_test):
+    """
+    True Equalized Odds Difference:
+    Max difference in TPR and FPR across all group pairs.
+    """
+    y_test = pd.Series(y_test).reset_index(drop=True)
+    y_pred = pd.Series(y_pred).reset_index(drop=True)
+    sensitive_test = pd.Series(sensitive_test).reset_index(drop=True)
+
+    group_metrics = {}
+
+    for group in sensitive_test.unique():
+        mask = sensitive_test == group
+        if mask.sum() < 10:
+            continue
+
+        yt = y_test[mask]
+        yp = y_pred[mask]
+
+        tp = int(((yt == 1) & (yp == 1)).sum())
+        fn = int(((yt == 1) & (yp == 0)).sum())
+        fp = int(((yt == 0) & (yp == 1)).sum())
+        tn = int(((yt == 0) & (yp == 0)).sum())
+
+        tpr = round(tp / (tp + fn), 4) if (tp + fn) > 0 else 0.0
+        fpr = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0.0
+
+        label = decode_group_label(str(sensitive_test.name or ""), group)
+        group_metrics[label] = {"tpr": tpr, "fpr": fpr, "count": int(mask.sum())}
+
+    if len(group_metrics) < 2:
+        return {"eod": 0.0, "group_metrics": group_metrics, "bias_detected": False}
+
+    tprs = [
+        v.get("tpr")
+        for v in group_metrics.values()
+        if v.get("tpr") is not None and pd.notna(v.get("tpr"))
+    ]
+    fprs = [
+        v.get("fpr")
+        for v in group_metrics.values()
+        if v.get("fpr") is not None and pd.notna(v.get("fpr"))
+    ]
+
+    if not tprs or not fprs:
+        return {"eod": 0.0, "group_metrics": group_metrics, "bias_detected": False}
+
+    tpr_diff = round(max(tprs) - min(tprs), 4)
+    fpr_diff = round(max(fprs) - min(fprs), 4)
+    eod = round(max(tpr_diff, fpr_diff), 4)
+
+    return {
+        "eod": eod,
+        "tpr_diff": tpr_diff,
+        "fpr_diff": fpr_diff,
+        "group_metrics": group_metrics,
+        "bias_detected": bool(eod > 0.1)
+    }
