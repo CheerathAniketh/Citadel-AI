@@ -5,8 +5,8 @@ from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
 from app.integrations.gcp_connector import GCPConnector
 from app.integrations.azure_connector import AzureConnector
-from app.modules.bias.analyzer import compute_spd, compute_di, compute_eod
-from app.modules.bias.explainer import explain_bias
+from app.modules.bias.analyzer import calculate_spd, calculate_di, compute_eod, analyze_bias, get_group_stats
+#from app.modules.bias.explainer import explain_bias
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ async def monitor_predictions(state: CitadelState) -> CitadelState:
 # ==================== ANALYSIS NODE ====================
 async def analyze_bias(state: CitadelState) -> CitadelState:
     """
-    Step 3: Run EquiLens bias analysis on predictions
+    Step 3: Run bias analysis on predictions
     Computes: SPD, Disparate Impact, Equalized Odds
     Explains via SHAP
     """
@@ -119,9 +119,6 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
         
         predictions = state['recent_predictions']
         
-        # Extract target and sensitive attributes
-        targets = [p.get('prediction', 'unknown') for p in predictions]
-        
         # Try to find sensitive attribute (gender, age, etc.)
         sensitive_attrs = []
         for p in predictions:
@@ -134,18 +131,47 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
             else:
                 sensitive_attrs.append('unknown')
         
-        # Compute bias metrics using EquiLens
+        # Extract target
+        targets = [p.get('prediction', 'unknown') for p in predictions]
+        
+        # Compute bias metrics
         try:
-            spd = compute_spd(targets, sensitive_attrs)
-            di = compute_di(targets, sensitive_attrs)
-            eod = compute_eod(targets, sensitive_attrs)
+            # For basic metrics without pandas df, use simple calculation
+            di = None
+            spd = None
+            eod = None
+            
+            # Try full analysis if possible
+            if targets and sensitive_attrs:
+                try:
+                    # Simple DI/SPD calculation
+                    from collections import defaultdict
+                    group_stats = defaultdict(lambda: {'positive': 0, 'total': 0})
+                    
+                    for target, group in zip(targets, sensitive_attrs):
+                        group_stats[str(group)]['total'] += 1
+                        if str(target).lower() in ['1', 'yes', 'true', 'positive', 'approved']:
+                            group_stats[str(group)]['positive'] += 1
+                    
+                    rates = []
+                    for group, stats in group_stats.items():
+                        if stats['total'] > 0:
+                            rate = stats['positive'] / stats['total']
+                            rates.append(rate)
+                    
+                    if rates:
+                        di = min(rates) / max(rates) if max(rates) > 0 else 0
+                        spd = max(rates) - min(rates)
+                        
+                except Exception as calc_e:
+                    logger.warning(f"Could not compute bias metrics: {calc_e}")
+        
         except Exception as e:
             logger.warning(f"Could not compute bias metrics: {e}")
-            spd = eod = di = None
         
         # Explain via SHAP
         try:
-            explanation = explain_bias(predictions)
+            explanation = {"error": "explainer not yet implemented"}
         except Exception as e:
             logger.warning(f"Could not generate SHAP explanation: {e}")
             explanation = {"error": str(e)}
@@ -329,6 +355,8 @@ async def alert(state: CitadelState) -> CitadelState:
             
             # TODO: Integrate with Slack/Jira/GitHub
             # For now, just document in audit log
+            if 'alerted_to' not in state:
+                state['alerted_to'] = []
             state['alerted_to'].append('audit_log')
         
         state['alert_status'] = 'sent'

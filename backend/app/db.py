@@ -5,10 +5,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Initialize Supabase client
-supabase: Client = create_client(
+"""supabase: Client = create_client(
     settings.SUPABASE_URL,
     settings.SUPABASE_KEY
-)
+)"""
 
 async def init_db():
     """Initialize database tables if they don't exist"""
