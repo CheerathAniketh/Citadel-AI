@@ -92,8 +92,11 @@ def analyze_bias(df, target_col, sensitive_col):
     df = df.copy()
 
     # Encode string target to binary
+
     if pd.api.types.is_string_dtype(df[target_col]) or df[target_col].dtype == object:
         unique_vals = df[target_col].dropna().unique()
+        if len(unique_vals) == 0:
+            raise ValueError(f"Column '{target_col}' has no non-null values to analyze")
         pos_label = next(
             (v for v in unique_vals if str(v).strip().lower() in POSITIVE_LABELS),
             unique_vals[0]

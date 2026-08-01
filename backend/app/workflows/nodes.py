@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any, List
+import pandas as pd 
 from datetime import datetime
 from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
@@ -99,8 +100,7 @@ async def monitor_predictions(state: CitadelState) -> CitadelState:
 async def analyze_bias(state: CitadelState) -> CitadelState:
     """
     Step 3: Run bias analysis on predictions
-    Computes: SPD, Disparate Impact, Equalized Odds
-    Explains via SHAP
+    Computes: SPD, Disparate Impact, Equalized Odds via EquiLens
     """
     if not state['recent_predictions']:
         state['audit_log'].append("⚠️ No predictions to analyze")
@@ -111,70 +111,30 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
         state['audit_log'].append("📍 Analysis started")
         
         predictions = state['recent_predictions']
+        df = pd.DataFrame(predictions)
         
-        # Try to find sensitive attribute (gender, age, etc.)
-        sensitive_attrs = []
-        for p in predictions:
-            if 'group' in p:
-                sensitive_attrs.append(p['group'])
-            elif 'gender' in p:
-                sensitive_attrs.append(p['gender'])
-            elif 'age_group' in p:
-                sensitive_attrs.append(p['age_group'])
-            else:
-                sensitive_attrs.append('unknown')
+        if 'group' not in df.columns:
+            raise ValueError("Predictions missing 'group' (sensitive attribute) field")
+        if 'prediction' not in df.columns:
+            raise ValueError("Predictions missing 'prediction' field")
         
-        # Extract target
-        targets = [p.get('prediction', 'unknown') for p in predictions]
+        # Core bias metrics via EquiLens (DI, SPD, per-group stats)
+        result = bias_analyzer.analyze_bias(df, target_col='prediction', sensitive_col='group')
+        di = result['di']
+        spd = result['spd']
+        status = result['severity']  # 'low' | 'medium' | 'high'
         
-        # Compute bias metrics
-        try:
-            # For basic metrics without pandas df, use simple calculation
-            di = None
-            spd = None
-            eod = None
-            
-            # Try full analysis if possible
-            if targets and sensitive_attrs:
-                try:
-                    # Simple DI/SPD calculation
-                    from collections import defaultdict
-                    group_stats = defaultdict(lambda: {'positive': 0, 'total': 0})
-                    
-                    for target, group in zip(targets, sensitive_attrs):
-                        group_stats[str(group)]['total'] += 1
-                        if str(target).lower() in ['1', 'yes', 'true', 'positive', 'approved']:
-                            group_stats[str(group)]['positive'] += 1
-                    
-                    rates = []
-                    for group, stats in group_stats.items():
-                        if stats['total'] > 0:
-                            rate = stats['positive'] / stats['total']
-                            rates.append(rate)
-                    
-                    if rates:
-                        di = min(rates) / max(rates) if max(rates) > 0 else 0
-                        spd = max(rates) - min(rates)
-                        
-                except Exception as calc_e:
-                    logger.warning(f"Could not compute bias metrics: {calc_e}")
-        
-        except Exception as e:
-            logger.warning(f"Could not compute bias metrics: {e}")
-        
-        # Explain via SHAP
-        try:
-            explanation = {"error": "explainer not yet implemented"}
-        except Exception as e:
-            logger.warning(f"Could not generate SHAP explanation: {e}")
-            explanation = {"error": str(e)}
-        
-        # Determine status
-        status = "healthy"
-        if di is not None and di < 0.8:
-            status = "critical"
-        elif spd is not None and spd > 0.1:
-            status = "warning"
+        # Equalized Odds requires ground-truth labels
+        eod = None
+        if 'actual_label' in df.columns:
+            y_test = df['actual_label'].astype(str).str.strip().str.lower().isin(bias_analyzer.POSITIVE_VALUES).astype(int)
+            y_pred = df['prediction'].astype(str).str.strip().str.lower().isin(bias_analyzer.POSITIVE_VALUES).astype(int)
+            eod_result = bias_analyzer.compute_eod(
+                y_test=y_test,
+                y_pred=y_pred,
+                sensitive_test=df['group']
+            )
+            eod = eod_result['eod']
         
         state['bias_metrics'] = {
             'disparate_impact': di,
@@ -185,7 +145,14 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
             'timestamp': datetime.now().isoformat()
         }
         
-        state['root_causes'] = explanation
+        # SHAP explanation requires a trained model artifact, which the monitoring
+        # pipeline doesn't load yet (only prediction I/O from SageMaker Data Capture).
+        # Left explicit rather than faked until model-loading is designed.
+        state['root_causes'] = {
+            'group_stats': result['group_stats'],
+            'note': 'SHAP explanation unavailable - no model artifact loaded in monitoring flow'
+        }
+        
         di_str = f"{di:.2f}" if di is not None else "N/A"
         spd_str = f"{spd:.2f}" if spd is not None else "N/A"
         state['audit_log'].append(
