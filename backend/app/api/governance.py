@@ -2,11 +2,9 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Dict, Any
 import logging
 from app.workflows.graph import run_governance_check
-from app.models import (
-    GovernanceCheckRequest,
-    GovernanceCheckResponse,
-    CloudProvider,
-)
+from app.models import (GovernanceCheckRequest,GovernanceCheckResponse,CloudProvider)
+from datetime import datetime
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +29,13 @@ async def run_governance_workflow(request: GovernanceCheckRequest):
     Returns:
         Governance report with metrics, alerts, and recommendations
     
-    Example:
+Example:
         POST /api/v1/governance/check
         {
-            "cloud_provider": "gcp",
+            "cloud_provider": "aws",
             "credentials": {
-                "project_id": "my-project",
-                "service_account_json": {...}
+                "account_id": "123456789",
+                "iam_role_arn": "arn:aws:iam::123456789:role/CitadelRole"
             }
         }
     """
@@ -52,25 +50,56 @@ async def run_governance_workflow(request: GovernanceCheckRequest):
         )
         
         # Build response
+        bias_metrics_raw = final_state.get('bias_metrics') or {}
+        timestamp_str = bias_metrics_raw.get('timestamp')
+        response_timestamp = (
+            datetime.fromisoformat(timestamp_str) if timestamp_str
+            else final_state.get('workflow_end_time') or datetime.now()
+        )
+        
+        alerts = [
+            {
+                'id': f"alert_{i}",
+                'alert_type': a.get('type', 'bias_warning'),
+                'severity': a.get('severity', 'warning'),
+                'message': a.get('message', ''),
+                'metric_value': a.get('value'),
+                'threshold': a.get('threshold'),
+                'created_at': response_timestamp,
+                'status': 'active'
+            }
+            for i, a in enumerate(final_state.get('alerts', []))
+        ]
+        
+        recommendations = [
+            {
+                'action': r.get('action', ''),
+                'feature': r.get('feature'),
+                'reason': r.get('reason', ''),
+                'expected_impact': r.get('expected_impact', '')
+            }
+            for r in final_state.get('recommended_fixes', [])
+        ]
+        
         response = GovernanceCheckResponse(
             status=final_state.get('workflow_status', 'failed'),
             models_discovered=final_state.get('discovered_count', 0),
             bias_metrics={
                 model_id: {
-                    'disparate_impact': final_state['bias_metrics'].get('disparate_impact'),
-                    'statistical_parity_diff': final_state['bias_metrics'].get('statistical_parity_diff'),
-                    'equalized_odds': final_state['bias_metrics'].get('equalized_odds'),
-                    'samples_count': final_state['bias_metrics'].get('samples_count'),
+                    'disparate_impact': bias_metrics_raw.get('disparate_impact'),
+                    'statistical_parity_diff': bias_metrics_raw.get('statistical_parity_diff'),
+                    'equalized_odds': bias_metrics_raw.get('equalized_odds'),
+                    'samples_count': bias_metrics_raw.get('samples_count', 0),
                     'affected_count': 0,  # TODO: Calculate
-                    'timestamp': final_state['bias_metrics'].get('timestamp'),
-                    'status': final_state['bias_metrics'].get('status', 'unknown')
+                    'timestamp': response_timestamp,
+                    'status': bias_metrics_raw.get('status', 'unknown')
                 }
                 for model_id in [m['id'] for m in final_state.get('discovered_models', [])]
             },
-            alerts=final_state.get('alerts', []),
-            recommendations=final_state.get('recommended_fixes', []),
+            alerts=alerts,
+            recommendations=recommendations,
             audit_log=final_state.get('audit_log', []),
-            timestamp=final_state.get('workflow_end_time')
+            timestamp=response_timestamp
         )
         
         logger.info(f"✅ Governance check complete: {response.status}")
@@ -89,7 +118,7 @@ async def get_governance_status(
     Get current governance status for a model
     
     Args:
-        cloud_provider: Which cloud (aws, gcp, azure)
+        cloud_provider: Which cloud (aws)
         model_id: Optional model ID filter
     
     Returns:
