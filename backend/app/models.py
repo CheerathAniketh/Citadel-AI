@@ -6,8 +6,7 @@ from enum import Enum
 # ==================== Cloud Providers ====================
 class CloudProvider(str, Enum):
     AWS = "aws"
-    GCP = "gcp"
-    AZURE = "azure"
+
 
 class AlertType(str, Enum):
     BIAS_CRITICAL = "bias_critical"
@@ -25,13 +24,7 @@ class AWSCredentials(BaseModel):
     account_id: str
     iam_role_arn: str
 
-class GCPCredentials(BaseModel):
-    project_id: str
-    service_account_json: Dict[str, Any]
 
-class AzureCredentials(BaseModel):
-    subscription_id: str
-    app_registration_id: str
 
 class ConnectCloudRequest(BaseModel):
     cloud_provider: CloudProvider
@@ -47,10 +40,10 @@ class ModelResponse(BaseModel):
     id: str
     model_name: str
     model_id: str
-    endpoint_url: Optional[str]
+    endpoint_url: Optional[str] = None
     cloud_provider: CloudProvider
     discovered_at: datetime
-    last_monitored: Optional[datetime]
+    last_monitored: Optional[datetime] = None
     is_active: bool
 
 class ModelListResponse(BaseModel):
@@ -70,15 +63,15 @@ class PredictionResponse(BaseModel):
     model_id: str
     timestamp: datetime
     prediction: str
-    group_membership: Optional[str]
+    group_membership: Optional[str] = None
 
 # ==================== Bias Metrics ====================
 class BiasMetricsResponse(BaseModel):
-    disparate_impact: float
-    statistical_parity_diff: float
-    equalized_odds: float
+    disparate_impact: Optional[float] = None
+    statistical_parity_diff: Optional[float] = None
+    equalized_odds: Optional[float] = None
     samples_count: int
-    affected_count: int
+    affected_count: int = 0
     timestamp: datetime
     status: str  # "healthy", "warning", "critical"
 
@@ -88,8 +81,8 @@ class AlertResponse(BaseModel):
     alert_type: AlertType
     severity: AlertSeverity
     message: str
-    metric_value: Optional[float]
-    threshold: Optional[float]
+    metric_value: Optional[float] = None
+    threshold: Optional[float] = None
     created_at: datetime
     status: str
 
@@ -104,7 +97,7 @@ class GovernanceCheckRequest(BaseModel):
 
 class RecommendationResponse(BaseModel):
     action: str  # 'drop_feature', 'retrain', 'quarantine'
-    feature: Optional[str]
+    feature: Optional[str] = None
     reason: str
     expected_impact: str
 
