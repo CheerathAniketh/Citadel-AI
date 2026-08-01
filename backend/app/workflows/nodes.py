@@ -5,10 +5,8 @@ from datetime import datetime
 from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
 from app.modules.bias import analyzer as bias_analyzer
-from app.modules.bias.analyzer import calculate_spd, calculate_di, compute_eod, analyze_bias, get_group_stats
-from app.modules.bias.explainer import explain_bias
-
 logger = logging.getLogger(__name__)
+
 
 # ==================== DISCOVERY NODE ====================
 async def discover_models(state: CitadelState) -> CitadelState:
