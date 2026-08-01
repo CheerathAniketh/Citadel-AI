@@ -338,10 +338,13 @@ async def complete_workflow(state: CitadelState) -> CitadelState:
         state['workflow_end_time'] = datetime.now()
         delta = state['workflow_end_time'] - state['workflow_start_time']
         state['total_execution_time_ms'] = int(delta.total_seconds() * 1000)
-        state['workflow_status'] = 'completed'
+        
+        # Don't overwrite a failure that happened earlier in the pipeline
+        if state.get('workflow_status') != 'failed':
+            state['workflow_status'] = 'completed'
         
         state['audit_log'].append(
-            f"✅ Workflow completed in {state['total_execution_time_ms']}ms"
+            f"{'✅' if state['workflow_status'] == 'completed' else '⚠️'} Workflow finished in {state['total_execution_time_ms']}ms with status: {state['workflow_status']}"
         )
         
         logger.info(f"✅ Governance check complete in {state['total_execution_time_ms']}ms")

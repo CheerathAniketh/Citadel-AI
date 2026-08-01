@@ -2,20 +2,24 @@
 
 **EquiLens at the core. Production-grade governance on top.**
 
-Citadel AI is a governance layer that connects to your cloud ML infrastructure (starting with AWS SageMaker), continuously discovers deployed models, monitors their live predictions for bias, and surfaces violations before they become compliance incidents. The bias-detection engine is powered by EquiLens — a validated, working fairness-metrics library (SPD, Disparate Impact, Equalized Odds, SHAP explainability) — wrapped in a LangGraph-orchestrated, continuously-running governance workflow.
+Citadel AI is a governance layer that connects to your cloud ML infrastructure (AWS SageMaker), continuously discovers deployed models, monitors their live predictions for bias, and surfaces violations before they become compliance incidents. The bias-detection engine is powered by EquiLens — a validated, working fairness-metrics library (SPD, Disparate Impact, Equalized Odds, SHAP explainability) — wrapped in a LangGraph-orchestrated governance workflow.
 
-> Status: **Private / in development.** This README doubles as the working architecture doc and build checklist ahead of DevThon (Aug 20–21, 2026).
+> Status: **Private / in development.** This README doubles as the working architecture doc, build log, and task board ahead of DevThon (Aug 20–21, 2026).
+>
+> **This file is our shared notes app for the project** — keep it updated with what's done, what's broken, what's next, and who's doing what. Since the repo is private, feel free to be verbose here.
 
 ---
 
-## 🎯 What is Citadel AI?
+## 👥 Team & ownership
 
-Most AI governance today is manual and periodic — someone runs a fairness audit once a quarter, on a spreadsheet, after the fact. Citadel flips that: connect your cloud account once, and Citadel autonomously discovers models, watches their real predictions, and flags fairness violations continuously — the way a security monitoring tool watches for intrusions, not the way a compliance team files a report.
+| Person | Focus |
+|---|---|
+| **Aniketh** | Core backend: LangGraph workflow, bias-engine wiring, Supabase persistence, API layer |
+| **Akanksha** | AWS integration layer (STS AssumeRole, real S3 Data Capture fetch) — new to backend dev, vibecoding with AI assistance. Onboarding notes below. |
 
-Two ways in:
+**Scope decision:** GCP and Azure connectors are cut entirely for the hackathon — AWS-only, for demo depth over breadth. `gcp_connector.py` / `azure_connector.py` have been deleted from the repo.
 
-- **Upload mode** — drop a CSV, get an instant pre-production bias audit. (This is EquiLens, unchanged.)
-- **Connect mode** — link an AWS account, pick a SageMaker endpoint, and Citadel audits it automatically every day (configurable, default 11:00 AM) — plus an on-demand "Run now" for immediate checks.
+**Sequencing decision:** the real AWS integration (STS AssumeRole, real SageMaker/S3 data fetch — currently still mocked) has been intentionally pushed to *last* priority. Supabase persistence of workflow runs is the current active work.
 
 ---
 
@@ -58,27 +62,33 @@ Two ways in:
         └──────────────────────────────────────────────────────┘
 ```
 
-Key change from the original design: **DETECT now branches conditionally.** A clean audit short-circuits straight to `COMPLETE` instead of always walking through remediation and alerting — this is the actual reason to use a graph orchestrator instead of a flat function pipeline, and it should stay visible in the code, not be optimized away.
+**Key design note:** DETECT branches conditionally — a clean audit short-circuits toward `COMPLETE` instead of always walking through remediation and alerting (both nodes early-return harmlessly when there's nothing to do). This is the actual reason to use a graph orchestrator instead of a flat function pipeline.
 
-### Node-by-node
+### Node-by-node — current real status (verified by running the code, not just reading it)
 
 | Node | What it does | Status |
 |---|---|---|
-| `discover_models` | Lists real SageMaker endpoints via a bound AWS **tool** (`list_endpoints`), not a hardcoded connector function | ⏳ to build |
-| `monitor_predictions` | Pulls inference input/output from SageMaker **Data Capture** logs in S3 | ⏳ to build |
-| `analyze_bias` | Calls EquiLens's existing `analyze_bias()`, `compute_intersectionality()`, SHAP explainer directly | ✅ ported from EquiLens |
-| `detect_violations` | Checks metrics against policy thresholds; branches to `complete` (clean) or `remediate` (violation) | ⏳ needs conditional edge |
-| `remediate` | Reasons over SHAP feature-importance output to recommend a *specific* fix (e.g. "drop `zip_code` — highest bias contribution"), not a static list | ⏳ to build |
-| `alert` | Sends Slack/Jira notification, writes to `audit_logs` | ⏳ to build |
-| `complete_workflow` | Records execution time, persists run to Supabase | ⏳ needs Supabase fix |
+| `discover_models` | Lists real SageMaker endpoints via `AWSConnector` | ✅ runs end-to-end; auth currently static keys only — real STS AssumeRole not yet wired (Akanksha) |
+| `monitor_predictions` | Pulls prediction data from discovered models | ⚠️ runs, but `get_predictions()` always returns **mock data**, even against real endpoints — real S3 Data Capture parsing not built (Akanksha) |
+| `analyze_bias` | Calls EquiLens's real `analyze_bias()` / `compute_eod()` on the DataFrame of predictions | ✅ wired to real EquiLens functions (was previously silently reimplemented inline + shadowed import — fixed) |
+| `detect_violation` | Checks DI/SPD/EOD against thresholds, sets `needs_remediation` | ✅ working |
+| `remediate` | Suggests fixes; uses SHAP top-features if available, generic list otherwise | ⚠️ working but generic-only — SHAP explanation is currently unavailable in the live monitoring flow (see note below) |
+| `alert` | Logs alerts to `audit_log`; no external notification yet | ⚠️ audit-log only, no Slack/Jira integration yet |
+| `complete_workflow` | Records execution time, finalizes `workflow_status` | ✅ fixed — previously always overwrote status to `'completed'` even after an earlier node failure; now preserves `'failed'` correctly |
 
-### AWS connection model
+**SHAP note:** `get_shap_values(model, X_train, X_test)` in `explainer.py` requires a *trained model artifact*, not just prediction input/output. The monitoring pipeline only has prediction I/O from SageMaker — it doesn't load the model itself. So SHAP is currently explicitly marked unavailable (`root_causes.note`) rather than faked. Loading the model artifact for real SHAP explanations is unscoped work — needs a decision on *how* (pull from SageMaker model registry? require user to upload artifact separately?).
+
+### AWS connection model (target design — not fully live yet)
 
 - **Cross-account IAM role assumption** (STS `AssumeRole`) — user creates a read-only role in their account trusting Citadel's account. No raw access keys stored, ever.
+  - Constructor supports `iam_role_arn` and calls `sts.assume_role()` when present; falls back to static `access_key_id`/`secret_access_key` only for local dev when no role ARN is given.
 - Scoped permissions only: `sagemaker:ListEndpoints`, `sagemaker:DescribeEndpoint`, `s3:GetObject` on the data-capture bucket.
-- **Data Capture must be enabled** on the target SageMaker endpoint at creation time — this is the prerequisite for `monitor_predictions` to have anything to read. No default logging exists otherwise.
+- **Data Capture must be enabled** on the target SageMaker endpoint at creation time — prerequisite for `monitor_predictions` to read anything real.
+- **Not yet built:** the actual S3 Data Capture log parsing (locating the bucket, listing/reading JSONL objects, mapping captured payloads to the `{prediction, group, actual_label}` shape the bias engine expects). This is real, separately-scoped work — assigned to Akanksha, intentionally last priority.
 
-### Data model (Supabase)
+### Data model (Supabase) — **schema created, nothing persists yet**
+
+Tables exist live in Supabase (created via `INIT_SQL` in `db.py`, RLS off for now — no auth system yet, fine for hackathon demo, **not fine if this goes anywhere near production**):
 
 ```
 users
@@ -89,60 +99,65 @@ users
                  └─ alerts
 ```
 
-### Scheduling
+**Current gap (active work):** `db.py` connects successfully (verified — real HTTP round-trip confirmed against live project), but **no node writes anything to these tables**. Every governance check is currently fully stateless — close the app, lose the run. Wiring real persistence into `complete_workflow` (or a dedicated node) is next up.
 
-- In-process scheduler (APScheduler) triggers `run_governance_check()` per registered endpoint at its configured daily time.
-- Same function is exposed via a manual `POST /governance/run-now` endpoint for on-demand checks and demos.
-- First connect triggers an immediate run so the user isn't waiting until the next scheduled slot to see value.
+### Scheduling — not started
+
+- In-process scheduler (APScheduler) to trigger `run_governance_check()` per registered endpoint at its configured daily time.
+- Manual `POST /governance/run-now` endpoint for on-demand checks/demos.
+- First connect should trigger an immediate run.
 
 ---
 
 ## 💎 Differentiator features (beyond baseline monitoring)
 
-These are what separate Citadel from "just another dashboard + alerts" tool:
-
-- [ ] **Counterfactual flip testing** — take a real prediction, flip only the protected attribute (same applicant, different gender/race), re-infer live, show the decision change side-by-side. Single most legible, memorable feature in the whole product.
-- [ ] **Adversarial fairness probing** — generate synthetic boundary-condition inputs near decision thresholds across protected groups, rather than only watching organic traffic. Reframes Citadel from passive monitor to active red-teamer.
-- [ ] **Fairness policy-as-code** — versioned, declarative thresholds (e.g. `DI >= 0.8 for gender`) enforceable in CI/CD, able to block a model deployment on violation. Borrows credibility from an already-trusted pattern (Terraform/OPA-style policy enforcement).
-- [ ] **Fleet-wide risk posture view** — all registered models ranked by risk in one screen, security-dashboard style.
+- [ ] **Counterfactual flip testing** — flip only the protected attribute on a real prediction, re-infer, show the decision change side-by-side. Most legible, memorable feature in the product.
+- [ ] **Adversarial fairness probing** — synthetic boundary-condition inputs near decision thresholds across protected groups, not just organic traffic.
+- [ ] **Fairness policy-as-code** — versioned, declarative thresholds (e.g. `DI >= 0.8 for gender`) enforceable in CI/CD.
+- [ ] **Fleet-wide risk posture view** — all registered models ranked by risk, security-dashboard style.
 
 ---
 
-## 🖥️ Frontend
+## 🖥️ Frontend — not started
 
-Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datadog / Wiz), not a playful consumer dashboard.
+Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datadog / Wiz).
 
-- [ ] Live-streaming audit log (SSE/websocket) rendering the existing `audit_log` array as it's generated, not as a single end-of-run blob — turns backend data we already produce into a demo-visible "something is happening" moment
+- [ ] Live-streaming audit log (SSE/websocket) rendering `audit_log` as it's generated
 - [ ] Counterfactual flip panel as the hero visual
-- [ ] Severity color language (green/amber/red) readable at a glance
+- [ ] Severity color language (green/amber/red)
 - [ ] Upload-mode and Connect-mode as two clear entry paths from login
 - [ ] Historical bias trend chart per endpoint (DI over time, from `audit_runs`)
 
 ---
 
-## ✅ What's already built (from EquiLens / earlier work)
+## ✅ What's actually working right now (verified by running it, not just reading code)
 
-- `calculate_spd()`, `calculate_di()`, `compute_eod()` — real fairness math
-- `compute_intersectionality()` — cross-group (e.g. gender × race) analysis
-- SHAP-based feature importance
-- FastAPI server, CORS, health check, base routing
-- LangGraph 7-node sequential skeleton (`graph.py`, `nodes.py`, `state.py`)
-- Pydantic Settings config supporting AWS/GCP/Azure/Supabase credentials
+- FastAPI app imports and starts cleanly; CORS + health check live
+- Real Supabase connection confirmed (`GET .../users?select=count` → `200 OK` against live hosted project)
+- LangGraph workflow executes fully async end-to-end (`discover → monitor → analyze → detect → remediate → alert → complete`) without crashing
+- Real AWS auth attempted on `discover_models` (correctly rejects invalid/test credentials with a real `UnrecognizedClientException`)
+- `workflow_status` correctly reflects failure vs. success (previously always reported `"completed"` even on a real discovery failure — fixed)
+- EquiLens's real `calculate_spd`, `calculate_di`, `compute_eod` are actually called by `analyze_bias` (previously imported but shadowed/unused — an inline reimplementation ran instead)
+- AWS-only: `CloudProvider` enum, request/response models, and all node branching now AWS-only; GCP/Azure code deleted
 
 ## ⏳ To-do (prioritized for Aug 20 build)
 
-### High priority — core loop
-- [ ] Real AWS tool layer: `list_endpoints`, `describe_endpoint`, S3 data-capture log fetch — via STS assume-role, not stored keys
-- [ ] Fix Supabase connection; create schema (`users`, `connected_accounts`, `registered_endpoints`, `audit_runs`, `bias_metrics`, `alerts`)
-- [ ] Conditional edge in graph: skip remediate/alert on clean audits
+### High priority — core loop (Aniketh, active)
+- [ ] **Persist governance workflow runs to Supabase** — `audit_runs`, `bias_metrics`, `alerts` tables currently unused; nothing survives past the request. *(current focus)*
+- [ ] End-to-end test with real (even free-tier/limited) AWS credentials — confirm real `list_endpoints()` behavior against an actual account
+- [ ] `/governance/status`, `/governance/remediate`, `/governance/report` endpoints — currently hardcoded placeholder responses; need real DB-backed queries once persistence lands
+- [ ] `clouds.py` — `connect`/`list`/`disconnect`/`test` endpoints are placeholder-only; need real Supabase reads/writes to `cloud_accounts`
+
+### High priority — AWS integration (Akanksha, last priority by design)
+- [ ] Real STS AssumeRole flow end-to-end (constructor support already exists; needs a real IAM role + testing)
+- [ ] Real S3 Data Capture log fetch in `get_predictions()` — replace mock data with real parsing of captured SageMaker inference logs
 - [ ] Deploy the intentionally biased hiring model (synthetic data) to a SageMaker endpoint with Data Capture enabled — this is the demo's ground truth
-- [ ] Scheduler for daily audits + manual "run now" endpoint
-- [ ] End-to-end test: connect → discover → monitor → analyze → detect real violation
 
 ### Medium priority — differentiators
 - [ ] Counterfactual flip testing node
-- [ ] SHAP-reasoned remediation (specific fix, not static list)
+- [ ] SHAP-reasoned remediation — needs the model-artifact-loading decision above resolved first
 - [ ] Slack webhook alert integration
+- [ ] Scheduler (APScheduler) + manual "run now" endpoint
 
 ### Frontend
 - [ ] Login + two-mode entry (upload / connect AWS)
@@ -151,13 +166,26 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - [ ] Historical trend chart
 
 ### Lower priority / post-hackathon
-- [ ] GCP / Azure connectors (deliberately deprioritized — AWS-only for demo depth over breadth)
 - [ ] Adversarial probing node
 - [ ] Fairness policy-as-code + CI/CD gate
 - [ ] Jira/GitHub alert integrations
-- [ ] Pydantic field renames (`model_id` → `model_identifier`)
+- [ ] Pydantic field renames (`model_id` → `model_identifier`, silences the protected-namespace warning)
 - [ ] Unit/integration test suite
-- [ ] API authentication (JWT)
+- [ ] **API authentication (JWT)** — currently no auth anywhere; `allow_origins=["*"]` + `allow_credentials=True` in CORS is a real hole. Fine for hackathon demo, must-fix before anything public-facing.
+- [ ] RLS policies on Supabase tables (currently off — fine for now, needed before any real user data touches this)
+
+---
+
+## 🐛 Known bugs fixed so far (log, so we don't reintroduce them)
+
+- `graph.py` was calling `.invoke()` (sync) against all-async nodes → every workflow run failed at the first node. Fixed: `await governance_graph.ainvoke(...)`.
+- `complete_workflow` unconditionally set `workflow_status = 'completed'`, silently overwriting real failures from earlier nodes.
+- `nodes.py` imported `analyze_bias` from `analyzer.py` directly, which got shadowed by the locally-defined `async def analyze_bias` in the same file — the real EquiLens function was never actually reachable.
+- F-string crash in the old `analyze_bias`: `f"DI={di:.2f if di else 'N/A'}"` is invalid Python (conditional inside a format spec).
+- `db.py` had the Supabase client instantiation commented out while `init_db()`/`get_supabase()` still referenced it → `NameError` on first real use.
+- `config.py`'s `.env` path was relative to CWD, not to the file itself → only worked when run from inside `backend/`.
+- `analyzer.py`'s `analyze_bias()` would raise `IndexError` on an empty/all-null target column.
+- Dependency cascade: `supabase==2.4.0` pinned an old `httpx`, which itself was too old for `gotrue`'s `proxy` kwarg usage; upgrading `supabase` then needed a `websockets` bump, which overshot `realtime`'s own pin. Resolved by aligning versions; `requirements.txt` regenerated from the working environment via `pip freeze`.
 
 ---
 
