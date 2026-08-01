@@ -3,10 +3,9 @@ from typing import Dict, Any, List
 from datetime import datetime
 from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
-from app.integrations.gcp_connector import GCPConnector
-from app.integrations.azure_connector import AzureConnector
+from app.modules.bias import analyzer as bias_analyzer
 from app.modules.bias.analyzer import calculate_spd, calculate_di, compute_eod, analyze_bias, get_group_stats
-#from app.modules.bias.explainer import explain_bias
+from app.modules.bias.explainer import explain_bias
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 async def discover_models(state: CitadelState) -> CitadelState:
     """
     Step 1: Auto-discover all AI models in cloud
-    Connects to AWS/GCP/Azure and finds deployed models
+    Connects to Aws and finds deployed models
     """
     try:
         logger.info(f"🔍 Discovering models in {state['cloud_provider']}...")
@@ -23,10 +22,7 @@ async def discover_models(state: CitadelState) -> CitadelState:
         # Select connector based on cloud provider
         if state['cloud_provider'] == 'aws':
             connector = AWSConnector(state['cloud_credentials'])
-        elif state['cloud_provider'] == 'gcp':
-            connector = GCPConnector(state['cloud_credentials'])
-        elif state['cloud_provider'] == 'azure':
-            connector = AzureConnector(state['cloud_credentials'])
+
         else:
             raise ValueError(f"Unknown cloud provider: {state['cloud_provider']}")
         
@@ -66,10 +62,7 @@ async def monitor_predictions(state: CitadelState) -> CitadelState:
         # Get connector
         if state['cloud_provider'] == 'aws':
             connector = AWSConnector(state['cloud_credentials'])
-        elif state['cloud_provider'] == 'gcp':
-            connector = GCPConnector(state['cloud_credentials'])
-        elif state['cloud_provider'] == 'azure':
-            connector = AzureConnector(state['cloud_credentials'])
+
         else:
             raise ValueError(f"Unknown cloud provider: {state['cloud_provider']}")
         
@@ -193,10 +186,10 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
         }
         
         state['root_causes'] = explanation
-        
+        di_str = f"{di:.2f}" if di is not None else "N/A"
+        spd_str = f"{spd:.2f}" if spd is not None else "N/A"
         state['audit_log'].append(
-            f"✅ Bias Analysis: DI={di:.2f if di else 'N/A'}, "
-            f"SPD={spd:.2f if spd else 'N/A'}, Status={status}"
+            f"✅ Bias Analysis: DI={di_str}, SPD={spd_str}, Status={status}"
         )
         
         logger.info(f"✅ Bias analysis complete: {status}")

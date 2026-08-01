@@ -124,7 +124,7 @@ async def run_governance_check(
     try:
         # Execute the workflow graph synchronously
         # The graph invokes all nodes in sequence
-        final_state = governance_graph.invoke(initial_state)
+        final_state =await governance_graph.invoke(initial_state) 
         
         logger.info(f"✅ Governance workflow completed successfully")
         

@@ -28,25 +28,9 @@ async def connect_cloud(request: ConnectCloudRequest):
             }
         }
     
-    Example for GCP:
-        POST /api/v1/clouds/connect
-        {
-            "cloud_provider": "gcp",
-            "credentials": {
-                "project_id": "my-project",
-                "service_account_json": {...}
-            }
-        }
     
-    Example for Azure:
-        POST /api/v1/clouds/connect
-        {
-            "cloud_provider": "azure",
-            "credentials": {
-                "subscription_id": "sub-123",
-                "app_registration_id": "app-456"
-            }
-        }
+    
+
     """
     try:
         logger.info(f"🔌 Connecting to {request.cloud_provider.value}...")
@@ -58,14 +42,9 @@ async def connect_cloud(request: ConnectCloudRequest):
             if not request.credentials.get('iam_role_arn'):
                 raise ValueError("AWS: iam_role_arn required")
         
-        elif request.cloud_provider.value == "gcp":
-            if not request.credentials.get('project_id'):
-                raise ValueError("GCP: project_id required")
-            # service_account_json is optional for local testing
+
         
-        elif request.cloud_provider.value == "azure":
-            if not request.credentials.get('subscription_id'):
-                raise ValueError("Azure: subscription_id required")
+
         
         # TODO: Store in database (Supabase)
         # Save to cloud_accounts table
@@ -105,14 +84,6 @@ async def list_connected_clouds() -> List[Dict[str, Any]]:
                 "status": "connected",
                 "models_count": 5,
                 "last_sync": "2024-01-01T12:30:00Z"
-            },
-            {
-                "id": "cloud_gcp_456",
-                "cloud_provider": "gcp",
-                "project_id": "my-project",
-                "status": "connected",
-                "models_count": 3,
-                "last_sync": "2024-01-01T12:25:00Z"
             }
         ]
     except Exception as e:
