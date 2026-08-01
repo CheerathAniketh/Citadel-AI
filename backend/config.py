@@ -1,5 +1,8 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
 
 class Settings(BaseSettings):
     """Environment variables and configuration"""
@@ -18,16 +21,6 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
     
-    # GCP
-    GCP_PROJECT_ID: Optional[str] = None
-    GCP_CREDENTIALS_JSON: Optional[str] = None
-    
-    # Azure
-    AZURE_SUBSCRIPTION_ID: Optional[str] = None
-    AZURE_TENANT_ID: Optional[str] = None
-    AZURE_CLIENT_ID: Optional[str] = None
-    AZURE_CLIENT_SECRET: Optional[str] = None
-    
     # Gemini API (for explanations)
     GEMINI_API_KEY: Optional[str] = None
     
@@ -39,7 +32,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     
     class Config:
-        env_file = ".env"
+        env_file = str(BASE_DIR / ".env")
         case_sensitive = True
 
 settings = Settings()
