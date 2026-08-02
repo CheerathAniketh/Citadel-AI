@@ -1,6 +1,8 @@
 from supabase import create_client, Client
 from config import settings
 import logging
+from datetime import datetime
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,71 @@ async def init_db():
 def get_supabase() -> Client:
     """Get Supabase client"""
     return supabase
+
+
+def upsert_model(cloud_provider: str, model_id: str, model_name: str, endpoint_url: str = None) -> str:
+    """Find or create a row in `models` for this discovered model, returning its UUID."""
+    existing = (
+        supabase.table("models")
+        .select("id")
+        .eq("cloud_provider", cloud_provider)
+        .eq("model_id", model_id)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        model_uuid = existing.data[0]["id"]
+        supabase.table("models").update({
+            "last_monitored": datetime.utcnow().isoformat()
+        }).eq("id", model_uuid).execute()
+        return model_uuid
+
+    result = supabase.table("models").insert({
+        "cloud_provider": cloud_provider,
+        "model_id": model_id,
+        "model_name": model_name,
+        "endpoint_url": endpoint_url,
+        "last_monitored": datetime.utcnow().isoformat(),
+    }).execute()
+    return result.data[0]["id"]
+
+
+def insert_audit_run(cloud_provider: str, status: str, models_discovered: int,
+                      execution_time_ms: int, error: str = None) -> str:
+    """Record one governance check run, returning its UUID."""
+    result = supabase.table("audit_runs").insert({
+        "cloud_provider": cloud_provider,
+        "status": status,
+        "models_discovered": models_discovered,
+        "execution_time_ms": execution_time_ms,
+        "error": error,
+    }).execute()
+    return result.data[0]["id"]
+
+
+def insert_bias_metrics(model_uuid: str, metrics: Dict[str, Any]) -> None:
+    """Record one bias-metrics snapshot for a model."""
+    supabase.table("bias_metrics").insert({
+        "model_id": model_uuid,
+        "disparate_impact": metrics.get("disparate_impact"),
+        "statistical_parity_diff": metrics.get("statistical_parity_diff"),
+        "equalized_odds": metrics.get("equalized_odds"),
+        "samples_count": metrics.get("samples_count", 0),
+        "affected_count": 0,
+    }).execute()
+
+
+def insert_alert(model_uuid: str, alert: Dict[str, Any]) -> None:
+    """Record one detected violation for a model."""
+    supabase.table("alerts").insert({
+        "model_id": model_uuid,
+        "alert_type": alert.get("type", "bias_warning"),
+        "severity": alert.get("severity", "warning"),
+        "message": alert.get("message", ""),
+        "metric_value": alert.get("value"),
+        "threshold": alert.get("threshold"),
+        "status": "active",
+    }).execute()
 
 # SQL to create tables (run manually in Supabase SQL editor if needed)
 INIT_SQL = """

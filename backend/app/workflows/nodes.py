@@ -5,6 +5,9 @@ from datetime import datetime
 from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
 from app.modules.bias import analyzer as bias_analyzer
+from app.db import insert_audit_run, upsert_model, insert_bias_metrics, insert_alert
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -332,7 +335,7 @@ async def alert(state: CitadelState) -> CitadelState:
 # ==================== COMPLETION NODE ====================
 async def complete_workflow(state: CitadelState) -> CitadelState:
     """
-    Step 7: Mark workflow as complete and calculate metrics
+    Step 7: Mark workflow as complete, calculate metrics, and persist results
     """
     try:
         state['workflow_end_time'] = datetime.now()
@@ -346,6 +349,40 @@ async def complete_workflow(state: CitadelState) -> CitadelState:
         state['audit_log'].append(
             f"{'✅' if state['workflow_status'] == 'completed' else '⚠️'} Workflow finished in {state['total_execution_time_ms']}ms with status: {state['workflow_status']}"
         )
+        
+        # Persist this run to Supabase. Wrapped separately so a DB hiccup
+        # doesn't wipe out a workflow result that already succeeded.
+        try:
+            run_id = insert_audit_run(
+                cloud_provider=state['cloud_provider'],
+                status=state['workflow_status'],
+                models_discovered=state.get('discovered_count', 0),
+                execution_time_ms=state['total_execution_time_ms'],
+                error=state.get('error')
+            )
+            state['audit_log'].append(f"💾 Persisted audit run {run_id}")
+            
+            bias_metrics = state.get('bias_metrics') or {}
+            for model in state.get('discovered_models', []):
+                model_uuid = upsert_model(
+                    cloud_provider=state['cloud_provider'],
+                    model_id=model['id'],
+                    model_name=model.get('name', model['id']),
+                    endpoint_url=model.get('endpoint_url')
+                )
+                
+                if bias_metrics:
+                    insert_bias_metrics(model_uuid, bias_metrics)
+                
+                for alert in state.get('alerts', []):
+                    insert_alert(model_uuid, alert)
+            
+            if state.get('discovered_models'):
+                state['audit_log'].append("💾 Persisted bias metrics and alerts")
+            
+        except Exception as persist_err:
+            logger.error(f"⚠️ Persistence failed (workflow result still returned): {persist_err}")
+            state['audit_log'].append(f"⚠️ Failed to persist results: {persist_err}")
         
         logger.info(f"✅ Governance check complete in {state['total_execution_time_ms']}ms")
         
