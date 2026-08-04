@@ -41,10 +41,10 @@ Example:
     """
     try:
         logger.info(f"🎯 Starting governance check for {request.cloud_provider}...")
-        
+        DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"  # TODO: replace with real auth once JWT lands
         # Execute governance workflow
         final_state = await run_governance_check(
-            user_id="demo_user",  # TODO: Get from auth
+            user_id=DEMO_USER_ID,  # TODO: Get from auth
             cloud_provider=request.cloud_provider.value,
             cloud_credentials=request.credentials
         )

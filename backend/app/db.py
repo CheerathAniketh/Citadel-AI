@@ -3,6 +3,7 @@ from config import settings
 import logging
 from datetime import datetime
 from typing import Dict, Any
+import uuid as uuid_lib
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,14 @@ supabase: Client = create_client(
     settings.SUPABASE_URL,
     settings.SUPABASE_KEY
 )
+
+
+def _safe_uuid(val):
+    """Return val as a valid UUID string, or None if it isn't one (e.g. 'demo_user' placeholder)."""
+    try:
+        return str(uuid_lib.UUID(str(val)))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 async def init_db():
     """Initialize database tables if they don't exist"""
@@ -54,12 +63,10 @@ def upsert_model(cloud_provider: str, model_id: str, model_name: str, endpoint_u
     }).execute()
     return result.data[0]["id"]
 
-
 def insert_audit_run(user_id: str, cloud_provider: str, status: str, models_discovered: int,
                       execution_time_ms: int, error: str = None) -> str:
-    """Record one governance check run, returning its UUID."""
     result = supabase.table("audit_runs").insert({
-        "user_id": user_id,
+        "user_id": _safe_uuid(user_id),
         "cloud_provider": cloud_provider,
         "status": status,
         "models_discovered": models_discovered,
@@ -67,7 +74,6 @@ def insert_audit_run(user_id: str, cloud_provider: str, status: str, models_disc
         "error": error,
     }).execute()
     return result.data[0]["id"]
-
 
 def insert_bias_metrics(model_uuid: str, metrics: Dict[str, Any]) -> None:
     """Record one bias-metrics snapshot for a model."""
