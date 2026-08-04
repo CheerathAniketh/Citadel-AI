@@ -9,7 +9,7 @@ class CitadelState(TypedDict, total=False):
     
     # ==================== User & Cloud Context ====================
     user_id: str
-    cloud_provider: str  # "aws", "gcp", "azure"
+    cloud_provider: str #aws only
     cloud_credentials: Dict[str, Any]
     
     # ==================== Discovery Phase ====================

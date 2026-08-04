@@ -23,6 +23,58 @@ from app.workflows.nodes import (
 
 logger = logging.getLogger(__name__)
 
+from app.workflows.nodes import (
+    discover_models, monitor_predictions, analyze_bias, detect_violation,
+    remediate, alert, complete_workflow, ingest_csv  # add ingest_csv
+)
+import pandas as pd
+
+async def run_csv_governance_check(user_id: str, filename: str, df: pd.DataFrame) -> dict:
+    """
+    CSV-upload equivalent of run_governance_check. Calls the same node functions
+    in sequence (bypassing discover/monitor) so bias math, thresholds, remediation
+    suggestions, and persistence are byte-for-byte identical to Connect mode.
+    """
+    logger.info(f"🚀 Starting CSV governance workflow for {filename}")
+
+    initial_state = create_initial_state(
+        user_id=user_id, cloud_provider="csv_upload", cloud_credentials={}
+    )
+    initial_state['audit_log'].append(
+        f"[{datetime.utcnow().isoformat()}] 🚀 CSV governance check initiated by {user_id}"
+    )
+
+    try:
+        state = await ingest_csv(initial_state, df, filename)
+        state = await analyze_bias(state)
+        state = await detect_violation(state)
+        state = await remediate(state)
+        state = await alert(state)
+        state = await complete_workflow(state)
+
+        logger.info("✅ CSV governance workflow completed")
+        return {
+            "workflow_status": state.get('workflow_status', 'completed'),
+            "discovered_models": state.get('discovered_models', []),
+            "discovered_count": state.get('discovered_count', 0),
+            "bias_metrics": state.get('bias_metrics', {}),
+            "violations": state.get('alerts', []),
+            "alerts": state.get('alerts', []),
+            "recommended_fixes": state.get('recommended_fixes', []),
+            "audit_log": state.get('audit_log', []),
+            "workflow_end_time": state.get('workflow_end_time'),
+            "execution_time_ms": state.get('total_execution_time_ms'),
+            "error": state.get('error')
+        }
+    except Exception as e:
+        logger.error(f"❌ CSV governance workflow failed: {str(e)}", exc_info=True)
+        return {
+            "workflow_status": "failed",
+            "error": str(e),
+            "audit_log": initial_state['audit_log'] + [
+                f"[{datetime.utcnow().isoformat()}] ❌ Workflow failed: {str(e)}"
+            ]
+        }
 
 def create_governance_graph():
     """

@@ -97,6 +97,42 @@ async def monitor_predictions(state: CitadelState) -> CitadelState:
     
     return state
 
+# ==================== CSV INGESTION (upload-mode equivalent of discover+monitor) ====================
+async def ingest_csv(state: CitadelState, df: pd.DataFrame, filename: str) -> CitadelState:
+    """
+    CSV-upload equivalent of discover+monitor: skips AWS entirely.
+    Treats the uploaded file as one synthetic 'model' with its rows as predictions,
+    so downstream nodes (analyze/detect/remediate/alert/complete) don't need to know
+    the data came from a file instead of SageMaker.
+    """
+    try:
+        logger.info(f"📄 Ingesting CSV upload: {filename}")
+        state['audit_log'].append(f"📍 CSV ingestion started: {filename}")
+
+        synthetic_model = {
+            "id": f"csv-{filename}-{int(datetime.now().timestamp())}",
+            "name": filename,
+        }
+        state['discovered_models'] = [synthetic_model]
+        state['discovered_count'] = 1
+
+        records = df.to_dict('records')
+        state['recent_predictions'] = records
+        state['predictions_count'] = len(records)
+
+        state['audit_log'].append(f"✅ Loaded {len(records)} rows from {filename}")
+        logger.info(f"✅ CSV ingestion complete: {len(records)} rows")
+
+    except Exception as e:
+        error_msg = f"❌ CSV ingestion failed: {str(e)}"
+        logger.error(error_msg)
+        state['monitoring_error'] = str(e)
+        state['audit_log'].append(error_msg)
+        state['workflow_status'] = 'failed'
+        state['error'] = str(e)
+
+    return state
+
 # ==================== ANALYSIS NODE ====================
 async def analyze_bias(state: CitadelState) -> CitadelState:
     """
@@ -172,7 +208,7 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
     
     return state
 
-# ==================== DETECTION NODE ===========f=========
+# ==================== DETECTION NODE ====================
 async def detect_violation(state: CitadelState) -> CitadelState:
     """
     Step 4: Check if bias exceeds fairness thresholds
@@ -354,7 +390,7 @@ async def complete_workflow(state: CitadelState) -> CitadelState:
         # doesn't wipe out a workflow result that already succeeded.
         try:
             run_id = insert_audit_run(
-                user_id =state.get("user_id"),
+                user_id=state.get("user_id"),
                 cloud_provider=state['cloud_provider'],
                 status=state['workflow_status'],
                 models_discovered=state.get('discovered_count', 0),

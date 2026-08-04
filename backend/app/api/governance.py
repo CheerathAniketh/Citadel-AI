@@ -1,15 +1,45 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from typing import Dict, Any
 import logging
-from app.workflows.graph import run_governance_check
+from app.workflows.graph import run_governance_check, run_csv_governance_check
 from app.models import (GovernanceCheckRequest,GovernanceCheckResponse,CloudProvider)
 from datetime import datetime
+import pandas as pd
+import io
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"  # TODO: replace once auth lands
+
+@router.post("/governance/analyze-csv")
+async def analyze_csv_upload(file: UploadFile = File(...)):
+    """
+    Upload-mode governance check. Same bias analysis as Connect mode, run on a
+    user-supplied CSV instead of live AWS predictions.
+
+    Required columns: 'prediction', 'group'. Optional: 'actual_label' (enables EOD).
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
+
+    missing = [c for c in ('prediction', 'group') if c not in df.columns]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"CSV missing required column(s): {missing}")
+
+    try:
+        return await run_csv_governance_check(user_id=DEMO_USER_ID, filename=file.filename, df=df)
+    except Exception as e:
+        logger.error(f"❌ CSV governance check failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @router.post("/governance/check", response_model=GovernanceCheckResponse)
 async def run_governance_workflow(request: GovernanceCheckRequest):
     """
