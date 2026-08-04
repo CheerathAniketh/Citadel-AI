@@ -172,7 +172,7 @@ async def analyze_bias(state: CitadelState) -> CitadelState:
     
     return state
 
-# ==================== DETECTION NODE ====================
+# ==================== DETECTION NODE ===========f=========
 async def detect_violation(state: CitadelState) -> CitadelState:
     """
     Step 4: Check if bias exceeds fairness thresholds
@@ -354,6 +354,7 @@ async def complete_workflow(state: CitadelState) -> CitadelState:
         # doesn't wipe out a workflow result that already succeeded.
         try:
             run_id = insert_audit_run(
+                user_id =state.get("user_id"),
                 cloud_provider=state['cloud_provider'],
                 status=state['workflow_status'],
                 models_discovered=state.get('discovered_count', 0),

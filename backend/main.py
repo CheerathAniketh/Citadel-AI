@@ -19,12 +19,11 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=False,  # no auth/cookies yet — flip to True once JWT lands, with real origins
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Include routers
 app.include_router(governance.router, prefix="/api/v1", tags=["governance"])
 app.include_router(clouds.router, prefix="/api/v1", tags=["clouds"])

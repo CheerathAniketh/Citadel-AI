@@ -55,10 +55,11 @@ def upsert_model(cloud_provider: str, model_id: str, model_name: str, endpoint_u
     return result.data[0]["id"]
 
 
-def insert_audit_run(cloud_provider: str, status: str, models_discovered: int,
+def insert_audit_run(user_id: str, cloud_provider: str, status: str, models_discovered: int,
                       execution_time_ms: int, error: str = None) -> str:
     """Record one governance check run, returning its UUID."""
     result = supabase.table("audit_runs").insert({
+        "user_id": user_id,
         "cloud_provider": cloud_provider,
         "status": status,
         "models_discovered": models_discovered,

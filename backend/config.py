@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Slack (for alerts)
     SLACK_WEBHOOK_URL: Optional[str] = None
     
+    # CORS
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
+    
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -34,5 +37,9 @@ class Settings(BaseSettings):
     class Config:
         env_file = str(BASE_DIR / ".env")
         case_sensitive = True
+    
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 
 settings = Settings()
