@@ -99,6 +99,69 @@ def insert_alert(model_uuid: str, alert: Dict[str, Any]) -> None:
         "status": "active",
     }).execute()
 
+def get_latest_audit_run(cloud_provider: str = None) -> Dict[str, Any] | None:
+    """Most recent audit_runs row, optionally filtered by cloud provider."""
+    query = supabase.table("audit_runs").select("*").order("created_at", desc=True).limit(1)
+    if cloud_provider:
+        query = query.eq("cloud_provider", cloud_provider)
+    result = query.execute()
+    return result.data[0] if result.data else None
+
+
+def get_model_uuid_by_external_id(cloud_provider: str, model_id: str) -> str | None:
+    """Look up a model's internal UUID from its external (cloud-provider-native) id."""
+    result = (
+        supabase.table("models")
+        .select("id")
+        .eq("cloud_provider", cloud_provider)
+        .eq("model_id", model_id)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0]["id"] if result.data else None
+
+
+def get_latest_bias_metrics(model_uuid: str) -> Dict[str, Any] | None:
+    """Most recent bias_metrics row for a given model UUID."""
+    result = (
+        supabase.table("bias_metrics")
+        .select("*")
+        .eq("model_id", model_uuid)
+        .order("timestamp", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def get_audit_runs_in_range(start_iso: str, end_iso: str, cloud_provider: str = None) -> list:
+    """All audit_runs rows within [start_iso, end_iso], optionally filtered by cloud provider."""
+    query = (
+        supabase.table("audit_runs")
+        .select("*")
+        .gte("created_at", start_iso)
+        .lte("created_at", end_iso)
+    )
+    if cloud_provider:
+        query = query.eq("cloud_provider", cloud_provider)
+    result = query.execute()
+    return result.data or []
+
+
+def get_alerts_in_range(start_iso: str, end_iso: str, model_uuid: str = None) -> list:
+    """All alerts within [start_iso, end_iso], optionally filtered to one model."""
+    query = (
+        supabase.table("alerts")
+        .select("*")
+        .gte("created_at", start_iso)
+        .lte("created_at", end_iso)
+    )
+    if model_uuid:
+        query = query.eq("model_id", model_uuid)
+    result = query.execute()
+    return result.data or []
+
+
 # SQL to create tables (run manually in Supabase SQL editor if needed)
 INIT_SQL = """
 -- Users table

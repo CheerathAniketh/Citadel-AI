@@ -2,10 +2,17 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from typing import Dict, Any
 import logging
 from app.workflows.graph import run_governance_check, run_csv_governance_check
-from app.models import (GovernanceCheckRequest,GovernanceCheckResponse,CloudProvider)
-from datetime import datetime
+from app.models import (GovernanceCheckRequest, GovernanceCheckResponse, CloudProvider)
+from datetime import datetime, timedelta
 import pandas as pd
 import io
+from app.db import (
+    get_latest_audit_run,
+    get_model_uuid_by_external_id,
+    get_latest_bias_metrics,
+    get_audit_runs_in_range,
+    get_alerts_in_range,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -13,6 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"  # TODO: replace once auth lands
+
 
 @router.post("/governance/analyze-csv")
 async def analyze_csv_upload(file: UploadFile = File(...)):
@@ -40,11 +48,13 @@ async def analyze_csv_upload(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"❌ CSV governance check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/governance/check", response_model=GovernanceCheckResponse)
 async def run_governance_workflow(request: GovernanceCheckRequest):
     """
     Execute full governance workflow on connected cloud
-    
+
     Flow:
     1. DISCOVER: Auto-find all models in cloud
     2. MONITOR: Fetch recent predictions
@@ -52,13 +62,13 @@ async def run_governance_workflow(request: GovernanceCheckRequest):
     4. DETECT: Check fairness violations
     5. REMEDIATE: Suggest fixes (if needed)
     6. ALERT: Trigger notifications
-    
+
     Args:
         request: Cloud provider and credentials
-    
+
     Returns:
         Governance report with metrics, alerts, and recommendations
-    
+
 Example:
         POST /api/v1/governance/check
         {
@@ -71,22 +81,20 @@ Example:
     """
     try:
         logger.info(f"🎯 Starting governance check for {request.cloud_provider}...")
-        DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"  # TODO: replace with real auth once JWT lands
-        # Execute governance workflow
+
         final_state = await run_governance_check(
             user_id=DEMO_USER_ID,  # TODO: Get from auth
-            cloud_provider=request.cloud_provider.value,
+            cloud_provider=request.cloud_provider,
             cloud_credentials=request.credentials
         )
-        
-        # Build response
+
         bias_metrics_raw = final_state.get('bias_metrics') or {}
         timestamp_str = bias_metrics_raw.get('timestamp')
         response_timestamp = (
             datetime.fromisoformat(timestamp_str) if timestamp_str
             else final_state.get('workflow_end_time') or datetime.now()
         )
-        
+
         alerts = [
             {
                 'id': f"alert_{i}",
@@ -100,7 +108,7 @@ Example:
             }
             for i, a in enumerate(final_state.get('alerts', []))
         ]
-        
+
         recommendations = [
             {
                 'action': r.get('action', ''),
@@ -110,7 +118,7 @@ Example:
             }
             for r in final_state.get('recommended_fixes', [])
         ]
-        
+
         response = GovernanceCheckResponse(
             status=final_state.get('workflow_status', 'failed'),
             models_discovered=final_state.get('discovered_count', 0),
@@ -131,43 +139,83 @@ Example:
             audit_log=final_state.get('audit_log', []),
             timestamp=response_timestamp
         )
-        
+
         logger.info(f"✅ Governance check complete: {response.status}")
         return response
-    
+
     except Exception as e:
         logger.error(f"❌ Governance check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/governance/status")
 async def get_governance_status(
-    cloud_provider: CloudProvider = Query(...),
+    cloud_provider: str = Query(...),
     model_id: str = Query(None)
 ):
     """
-    Get current governance status for a model
-    
-    Args:
-        cloud_provider: Which cloud (aws)
-        model_id: Optional model ID filter
-    
-    Returns:
-        Current metrics and alert status
+    Get current governance status — real data from Supabase.
+
+    Without model_id: latest overall audit run for this cloud provider.
+    With model_id: latest bias metrics recorded for that specific model.
     """
     try:
-        # TODO: Implement status retrieval from database
-        return {
-            "status": "ok",
-            "cloud_provider": cloud_provider.value,
-            "model_id": model_id,
-            "last_check": "2024-01-01T00:00:00Z",
-            "metrics": {
-                "disparate_impact": 0.75,
-                "status": "warning"
+        if model_id:
+            model_uuid = get_model_uuid_by_external_id(cloud_provider, model_id)
+            if not model_uuid:
+                return {
+                    "status": "no_data",
+                    "cloud_provider": cloud_provider,
+                    "model_id": model_id,
+                    "message": "No governance checks found for this model yet"
+                }
+
+            metrics = get_latest_bias_metrics(model_uuid)
+            if not metrics:
+                return {
+                    "status": "no_data",
+                    "cloud_provider": cloud_provider,
+                    "model_id": model_id,
+                    "message": "Model discovered but no bias metrics recorded yet"
+                }
+
+            di = metrics.get("disparate_impact")
+            metric_status = "critical" if di is not None and di < 0.8 else "ok"
+
+            return {
+                "status": "ok",
+                "cloud_provider": cloud_provider,
+                "model_id": model_id,
+                "last_check": metrics.get("timestamp"),
+                "metrics": {
+                    "disparate_impact": di,
+                    "statistical_parity_diff": metrics.get("statistical_parity_diff"),
+                    "equalized_odds": metrics.get("equalized_odds"),
+                    "status": metric_status
+                }
             }
+
+        run = get_latest_audit_run(cloud_provider)
+        if not run:
+            return {
+                "status": "no_data",
+                "cloud_provider": cloud_provider,
+                "model_id": None,
+                "message": "No governance checks have been run yet for this cloud provider"
+            }
+
+        return {
+            "status": run.get("status"),
+            "cloud_provider": cloud_provider,
+            "model_id": None,
+            "last_check": run.get("created_at"),
+            "models_discovered": run.get("models_discovered"),
+            "execution_time_ms": run.get("execution_time_ms")
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/governance/remediate")
 async def apply_remediation(
@@ -177,19 +225,19 @@ async def apply_remediation(
 ):
     """
     Apply a remediation action to a model
-    
+
     Args:
         model_id: Target model
         action: 'drop_feature', 'retrain', 'quarantine'
         feature: Feature to drop (if action is drop_feature)
-    
+
     Returns:
         Remediation status and expected impact
     """
     try:
         if action == 'drop_feature' and not feature:
             raise ValueError("feature required for drop_feature action")
-        
+
         # TODO: Implement remediation logic
         return {
             "status": "applied",
@@ -201,36 +249,58 @@ async def apply_remediation(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/governance/report")
 async def get_audit_report(
     model_id: str = Query(None),
-    start_date: str = Query(None),
-    end_date: str = Query(None)
+    cloud_provider: str = Query(None),
+    start_date: str = Query(None, description="ISO date, defaults to 30 days ago"),
+    end_date: str = Query(None, description="ISO date, defaults to now")
 ):
     """
-    Get detailed audit report for compliance
-    
-    Args:
-        model_id: Optional filter by model
-        start_date: Start date (ISO format)
-        end_date: End date (ISO format)
-    
-    Returns:
-        Comprehensive audit trail and compliance evidence
+    Get detailed audit report for compliance — real data from Supabase.
+
+    Filters by cloud_provider and/or model_id (model_id requires cloud_provider
+    to resolve to an internal model UUID). Defaults to the last 30 days.
     """
     try:
-        # TODO: Retrieve from database
+        end_dt = datetime.fromisoformat(end_date) if end_date else datetime.utcnow()
+        start_dt = datetime.fromisoformat(start_date) if start_date else end_dt - timedelta(days=30)
+
+        cp_value = cloud_provider
+
+        runs = get_audit_runs_in_range(start_dt.isoformat(), end_dt.isoformat(), cp_value)
+        checks_performed = len(runs)
+
+        model_uuid = None
+        if model_id and cloud_provider:
+            model_uuid = get_model_uuid_by_external_id(cloud_provider, model_id)
+
+        alerts = get_alerts_in_range(start_dt.isoformat(), end_dt.isoformat(), model_uuid)
+        violations_found = len(alerts)
+        violations_resolved = len([a for a in alerts if a.get("status") == "resolved"])
+
+        if violations_found == 0:
+            compliance_status = "compliant"
+        elif violations_resolved == violations_found:
+            compliance_status = "compliant"
+        elif violations_resolved > 0:
+            compliance_status = "partial"
+        else:
+            compliance_status = "non_compliant"
+
         return {
-            "report_id": "report_12345",
-            "generated_at": "2024-01-01T00:00:00Z",
+            "report_id": f"report_{int(datetime.utcnow().timestamp())}",
+            "generated_at": datetime.utcnow().isoformat(),
             "model_id": model_id,
-            "period": f"{start_date} to {end_date}",
-            "checks_performed": 10,
-            "violations_found": 2,
-            "violations_resolved": 1,
-            "compliance_status": "partial",
+            "cloud_provider": cp_value,
+            "period": f"{start_dt.isoformat()} to {end_dt.isoformat()}",
+            "checks_performed": checks_performed,
+            "violations_found": violations_found,
+            "violations_resolved": violations_resolved,
+            "compliance_status": compliance_status,
             "regulations_covered": ["EEOC", "EU AI Act", "GDPR"],
-            "audit_log": []
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
