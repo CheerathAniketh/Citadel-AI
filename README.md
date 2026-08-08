@@ -169,6 +169,8 @@ users
 
 **Persistence is done.** `complete_workflow` writes a real `audit_runs` row every run, plus `models`/`bias_metrics`/`alerts` rows whenever a model was discovered (AWS or CSV). Verified via direct Supabase table checks and live HTTP `201 Created` responses across multiple Connect-mode and upload-mode test runs, including today's real AWS run.
 
+**RLS is enabled** (Aug 8) — backend uses the `service_role` key so it bypasses RLS by design and persistence is unaffected. Real per-user RLS policies (`user_id = auth.uid()`) are still needed before any client talks to Supabase with the `anon` key (i.e. before frontend queries Supabase directly, if it ever does — right now everything should route through the FastAPI backend).
+
 ### Scheduling — not started
 
 - In-process scheduler (APScheduler) to trigger `run_governance_check()` per registered endpoint at its configured daily time.
@@ -227,7 +229,8 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - [x] ~~End-to-end test with real AWS credentials~~ ✅ done
 - [ ] Real STS AssumeRole flow, tested cross-account (needed before Akanksha connects as a separate real user)
 - [ ] JWT auth via Supabase (Google sign-in) — replace hardcoded `demo_user` UUID everywhere
-- [ ] RLS policies on Supabase tables — needed once a second real user's data exists
+- [x] ~~RLS enabled on Supabase tables~~ ✅ **enabled Aug 8** — backend confirmed still writing correctly using the `service_role` key (see bug log below). Real per-user RLS *policies* (`user_id = auth.uid()`) still need to be written once JWT auth exists — right now RLS is on but the backend bypasses it via `service_role`, which is the correct pattern for a trusted backend, not a workaround.
+- [ ] Investigate `.env` parse warnings (`Python-dotenv could not parse statement starting at line 7-21`) — didn't break anything today, but worth cleaning up before it silently hides a real config issue later
 - [ ] `/governance/status`, `/governance/remediate`, `/governance/report` endpoints — currently hardcoded placeholder responses; unblocked by persistence, needs real queries
 - [ ] `clouds.py` — `connect`/`list`/`disconnect`/`test` endpoints are placeholder-only; need real Supabase reads/writes to `cloud_accounts`
 - [ ] Add `_safe_uuid()` guard in `db.py` around all UUID-typed inserts
@@ -276,6 +279,8 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - `python-multipart` wasn't installed — required by FastAPI for any `UploadFile`/`File(...)` endpoint, silent until the CSV upload endpoint was actually added.
 - **(new)** First draft of the real `get_predictions()` rewrite got pasted back into the file with broken indentation — `async def get_predictions`, `_parse_s3_uri`, `_fetch_and_parse_capture_logs`, and `_parse_capture_line` all landed at module level (column 0) instead of indented inside `class AWSConnector`. Would have raised `AttributeError: 'AWSConnector' object has no attribute 'get_predictions'` at call time. Fixed by rewriting the full file with correct indentation.
 - **(new)** First live Connect-mode test with real credentials returned `models_discovered: 0`. Not an auth or discovery bug — the request specified `region: "us-east-1"` while the endpoint was actually deployed in `ap-south-1`. SageMaker endpoint listing is region-scoped, so the search legitimately found nothing. Fixed by correcting the region in the request.
+- **(new)** Enabled RLS on Supabase tables — immediately after, every governance-check run started failing to persist with `code: '42501', "new row violates row-level security policy for table \"audit_runs\""` (Supabase itself returned `401 Unauthorized`). Root cause: the backend's `SUPABASE_KEY` was the `anon` key, which *is* subject to RLS, and zero policies existed yet (default-deny). The workflow itself ran fine end-to-end — only the final persistence step broke. Fixed by switching `SUPABASE_KEY` in `.env` to the `service_role` key, which bypasses RLS by design — the correct pattern for a trusted backend service, not a workaround. Confirmed fixed: re-ran the same check, got `201 Created` on `audit_runs`/`bias_metrics`/`alerts` again. Real per-row RLS policies (`user_id = auth.uid()`) still need writing before any browser/frontend code talks to Supabase directly with the `anon` key.
+- **(new)** After the `service_role` key swap, uvicorn logged 12x `Python-dotenv could not parse statement starting at line N` on startup. Didn't break anything (app started, Supabase connected, workflow persisted fine), but flagged as a real `.env` formatting issue to track down before it masks something that actually matters — likely an unescaped/unquoted value or stray line format somewhere around lines 7–21.
 
 ---
 
