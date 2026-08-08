@@ -1,15 +1,23 @@
 import jwt
 from fastapi import Header, HTTPException
-from config import settings
+from jwt import PyJWKClient
 
-# Supabase signs JWTs with this project's JWT secret (HS256).
-# Find it in: Supabase Dashboard -> Project Settings -> API -> JWT Settings -> JWT Secret
-# Add it to your .env as SUPABASE_JWT_SECRET
+# Supabase project's JWKS endpoint — publishes the public keys used to
+# verify tokens signed with the newer asymmetric (ES256) signing method.
+# No secret needed here; this is Supabase's public key set.
+SUPABASE_URL = "https://qxsyscrbnbrzzvctozht.supabase.co"
+JWKS_URL = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+
+# PyJWKClient caches fetched keys internally, so this is safe to reuse
+# across requests without re-fetching every time.
+_jwk_client = PyJWKClient(JWKS_URL)
+
 
 async def get_current_user(authorization: str = Header(...)) -> str:
     """
     FastAPI dependency: verifies the Authorization: Bearer <token> header
-    against Supabase's JWT secret, returns the real user_id (the 'sub' claim).
+    against Supabase's public JWKS (ES256), returns the real user_id
+    (the 'sub' claim).
 
     Use like:
         @router.post("/governance/check")
@@ -22,10 +30,11 @@ async def get_current_user(authorization: str = Header(...)) -> str:
     token = authorization.split(" ", 1)[1]
 
     try:
+        signing_key = _jwk_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=["ES256"],
             audience="authenticated",
         )
     except jwt.ExpiredSignatureError:

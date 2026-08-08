@@ -19,7 +19,9 @@ Citadel AI is a governance layer that connects to your cloud ML infrastructure (
 
 **Scope decision:** GCP and Azure connectors are cut entirely for the hackathon — AWS-only, for demo depth over breadth. `gcp_connector.py` / `azure_connector.py` have been deleted from the repo.
 
-**Sequencing update (Aug 8):** the real AWS integration — previously listed as last-priority/Akanksha's task — is **done**. Aniketh deployed the test model to a real SageMaker endpoint, sent real traffic, and wired `get_predictions()` to parse real S3 Data Capture logs end-to-end. Verified live against 235 real predictions (see below). Next up: auth (JWT via Supabase) + frontend.
+**Sequencing update (Aug 8, day):** the real AWS integration — previously listed as last-priority/Akanksha's task — is **done**. Aniketh deployed the test model to a real SageMaker endpoint, sent real traffic, and wired `get_predictions()` to parse real S3 Data Capture logs end-to-end. Verified live against 235 real predictions (see below).
+
+**Sequencing update (Aug 8, evening):** JWT auth via Supabase (Google sign-in) is also done and verified end-to-end — real `user_id`s now flow through every governance check and persist correctly to Supabase, replacing the hardcoded demo user. Next: Akanksha starts frontend (login + upload/connect screens) against this real, working auth contract.
 
 ---
 
@@ -155,7 +157,26 @@ This matches the raw `traffic.py` findings from the model-deployment side (male 
 - Real discovery tested with both placeholder credentials (correctly rejected with `UnrecognizedClientException`) and real credentials (correctly discovers endpoints + real prediction data), confirming auth wiring is genuinely live, not stubbed.
 - **Still not tested end-to-end:** real STS AssumeRole flow (cross-account). Everything validated so far used static access keys for the same account. Needs a second AWS account (e.g. Akanksha's) + a real trust-policy role to fully validate before the demo.
 
+### 🔐 Auth — JWT via Supabase (done, verified Aug 8)
+
+**What changed:** every write-triggering governance route now requires a real, verified identity instead of the hardcoded `demo_user` UUID.
+
+- Frontend flow (for whoever builds the UI): `supabase.auth.signInWithOAuth({ provider: 'google' })` → Supabase handles the OAuth dance → returns a session with a real JWT. Attach it as `Authorization: Bearer <token>` on every API call.
+- Backend: `app/auth.py` exposes a `get_current_user` FastAPI dependency, added to `/governance/check` and `/governance/analyze-csv`. It verifies the incoming JWT and returns the real `user_id` (`sub` claim), which then flows into `run_governance_check`/`run_csv_governance_check` → `insert_audit_run`, replacing the old hardcoded constant everywhere it mattered.
+- **Important gotcha, worth knowing if this ever needs debugging again:** this Supabase project issues **asymmetric `ES256`-signed JWTs** (via Supabase's newer JWT signing-keys system), not the legacy shared-secret `HS256` tokens. Verification is done against Supabase's public JWKS endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`) via `PyJWKClient`, not against a `SUPABASE_JWT_SECRET`. If you see `alg: "ES256"` in a decoded token header, that confirms which path applies — trying to verify it with a shared HS256 secret will fail every time, not because anything's broken, just the wrong method for this project's config.
+- `/governance/status` and `/governance/report` are currently **not** behind auth — they're read-only, filtered by `cloud_provider`/`model_id` rather than by user, and nothing public-facing depends on them yet. Worth revisiting before this is public.
+
+**Live end-to-end test (Aug 8):** signed in with Google via a throwaway local test page → got a real Supabase session/JWT → curled `/governance/check` with it → backend correctly extracted the real `user_id` and logged/persisted under it:
+```
+"🚀 Governance check initiated by 06b0e979-0bbe-4678-82b7-02bd4bd6bd50"
+```
+confirmed in Supabase's `audit_runs` table as well — no more `00000000-...-0001` rows going forward.
+
+Google OAuth setup itself: Google Cloud Console → OAuth consent screen (User type: **External**, Publishing status: **Testing**, both team members added as test users) → OAuth Client (Web application) → Authorized redirect URI set to `https://qxsyscrbnbrzzvctozht.supabase.co/auth/v1/callback` → Client ID + Secret pasted into Supabase's Google provider settings, toggled on.
+
 ### Data model (Supabase) — ✅ live and persisting
+
+
 
 ```
 users
@@ -193,7 +214,7 @@ users
 Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datadog / Wiz). Building minimal-and-working first, layering frameworks/polish later — not going deep on styling until the core loop is visible end to end.
 
 **Plan:**
-- [ ] Login — via Supabase Auth (Google sign-in), which issues a real JWT. No more hardcoded `demo_user`.
+- [ ] Login — via Supabase Auth (Google sign-in). Backend auth is done and tested; frontend just needs `supabase.auth.signInWithOAuth({ provider: 'google' })` and to attach `session.access_token` as `Authorization: Bearer <token>` on every API call. No backend work blocking this.
 - [ ] Upload-mode screen (CSV upload → DI/SPD/EOD results) — backend already stable, build against this first
 - [ ] Connect-mode screen (enter AWS credentials/role → discovered endpoints → run check → live results) — backend now validated end-to-end, safe to build against
 - [ ] Audit history view, pulling real `audit_runs`/`bias_metrics`/`alerts` from Supabase
@@ -216,6 +237,7 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - `workflow_status` correctly reflects failure vs. success
 - EquiLens's real `calculate_spd`, `calculate_di`, `compute_eod` are actually called by `analyze_bias` — validated against Kaggle Adult dataset (matches literature value) **and against real live AWS traffic** (matches the model's known bias pattern)
 - Persistence fully working: `audit_runs`, `models`, `bias_metrics`, `alerts` all confirmed writing to live Supabase across both modes, including real AWS runs
+- **Real JWT auth confirmed end-to-end** — Google sign-in via Supabase issues a real `ES256` JWT, backend verifies it against Supabase's public JWKS (no shared secret), extracts the real `user_id`, and that identity flows through the full governance workflow into Supabase — confirmed via a live test with a real Google account, replacing the hardcoded demo user entirely
 - CSV upload mode fully working: `POST /governance/analyze-csv`, tested against 3 datasets covering both the violation branch and the clean-audit branch
 - Conditional graph branching (clean audit short-circuits past remediation/alerting) confirmed working on real data, not just by reading the code
 - AWS-only: `CloudProvider` enum, request/response models, and all node branching now AWS-only; GCP/Azure code deleted
@@ -228,9 +250,10 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - [x] ~~Real S3 Data Capture log fetch in `get_predictions()`~~ ✅ done, verified against 235 real predictions
 - [x] ~~End-to-end test with real AWS credentials~~ ✅ done
 - [ ] Real STS AssumeRole flow, tested cross-account (needed before Akanksha connects as a separate real user)
-- [ ] JWT auth via Supabase (Google sign-in) — replace hardcoded `demo_user` UUID everywhere
-- [x] ~~RLS enabled on Supabase tables~~ ✅ **enabled Aug 8** — backend confirmed still writing correctly using the `service_role` key (see bug log below). Real per-user RLS *policies* (`user_id = auth.uid()`) still need to be written once JWT auth exists — right now RLS is on but the backend bypasses it via `service_role`, which is the correct pattern for a trusted backend, not a workaround.
+- [x] ~~JWT auth via Supabase (Google sign-in)~~ ✅ **done Aug 8** — replaced hardcoded `demo_user` UUID with real `user_id` extracted from a verified Supabase JWT on every protected route. See auth details below.
+- [x] ~~RLS enabled on Supabase tables~~ ✅ enabled Aug 8 — backend confirmed still writing correctly using the `service_role` key (see bug log below). Real per-user RLS *policies* (`user_id = auth.uid()`) still worth writing as defense-in-depth, though the backend itself now enforces per-user identity at the API layer via JWT verification, not just at the DB layer.
 - [ ] Investigate `.env` parse warnings (`Python-dotenv could not parse statement starting at line 7-21`) — didn't break anything today, but worth cleaning up before it silently hides a real config issue later
+- [ ] Decide whether `/governance/status` and `/governance/report` should also require auth — currently open/unauthenticated, fine for now since nothing public-facing depends on them yet
 - [ ] `/governance/status`, `/governance/remediate`, `/governance/report` endpoints — currently hardcoded placeholder responses; unblocked by persistence, needs real queries
 - [ ] `clouds.py` — `connect`/`list`/`disconnect`/`test` endpoints are placeholder-only; need real Supabase reads/writes to `cloud_accounts`
 - [ ] Add `_safe_uuid()` guard in `db.py` around all UUID-typed inserts
@@ -280,7 +303,11 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - **(new)** First draft of the real `get_predictions()` rewrite got pasted back into the file with broken indentation — `async def get_predictions`, `_parse_s3_uri`, `_fetch_and_parse_capture_logs`, and `_parse_capture_line` all landed at module level (column 0) instead of indented inside `class AWSConnector`. Would have raised `AttributeError: 'AWSConnector' object has no attribute 'get_predictions'` at call time. Fixed by rewriting the full file with correct indentation.
 - **(new)** First live Connect-mode test with real credentials returned `models_discovered: 0`. Not an auth or discovery bug — the request specified `region: "us-east-1"` while the endpoint was actually deployed in `ap-south-1`. SageMaker endpoint listing is region-scoped, so the search legitimately found nothing. Fixed by correcting the region in the request.
 - **(new)** Enabled RLS on Supabase tables — immediately after, every governance-check run started failing to persist with `code: '42501', "new row violates row-level security policy for table \"audit_runs\""` (Supabase itself returned `401 Unauthorized`). Root cause: the backend's `SUPABASE_KEY` was the `anon` key, which *is* subject to RLS, and zero policies existed yet (default-deny). The workflow itself ran fine end-to-end — only the final persistence step broke. Fixed by switching `SUPABASE_KEY` in `.env` to the `service_role` key, which bypasses RLS by design — the correct pattern for a trusted backend service, not a workaround. Confirmed fixed: re-ran the same check, got `201 Created` on `audit_runs`/`bias_metrics`/`alerts` again. Real per-row RLS policies (`user_id = auth.uid()`) still need writing before any browser/frontend code talks to Supabase directly with the `anon` key.
+- **(new)** Enabled RLS on Supabase tables — immediately after, every governance-check run started failing to persist with `code: '42501', "new row violates row-level security policy for table \"audit_runs\""` (Supabase itself returned `401 Unauthorized`). Root cause: the backend's `SUPABASE_KEY` was the `anon` key, which *is* subject to RLS, and zero policies existed yet (default-deny). The workflow itself ran fine end-to-end — only the final persistence step broke. Fixed by switching `SUPABASE_KEY` in `.env` to the `service_role` key, which bypasses RLS by design — the correct pattern for a trusted backend service, not a workaround. Confirmed fixed: re-ran the same check, got `201 Created` on `audit_runs`/`bias_metrics`/`alerts` again. Real per-row RLS policies (`user_id = auth.uid()`) still need writing before any browser/frontend code talks to Supabase directly with the `anon` key.
 - **(new)** After the `service_role` key swap, uvicorn logged 12x `Python-dotenv could not parse statement starting at line N` on startup. Didn't break anything (app started, Supabase connected, workflow persisted fine), but flagged as a real `.env` formatting issue to track down before it masks something that actually matters — likely an unescaped/unquoted value or stray line format somewhere around lines 7–21.
+- **(new)** `run_governance_workflow` in `governance.py` was updated to reference `user_id` (from the new auth dependency) inside the function body, but the function *signature* wasn't updated to actually declare `user_id: str = Depends(get_current_user)` as a parameter — would have raised `NameError: name 'user_id' is not defined` on every call. Two passes were needed to fully catch this since the first "fix" only updated the body, not the signature. Fixed by adding the parameter to the signature.
+- **(new)** First version of a standalone local test page (used to grab a real JWT for curl testing before frontend existed) threw `Uncaught SyntaxError: Identifier 'supabase' has already been declared`. Cause: the Supabase CDN script exposes a global `window.supabase`, and the test page's own code also declared `const supabase = window.supabase.createClient(...)` in the same scope — a naming collision, not a real logic bug. Fixed by renaming the local client variable to `sb`.
+- **(new)** First `auth.py` implementation verified JWTs using `HS256` against a shared `SUPABASE_JWT_SECRET` — the legacy Supabase auth signing method. Once a real token was obtained and inspected, its header showed `"alg":"ES256"` — this Supabase project uses the newer **asymmetric JWT signing keys** system, not the legacy shared secret. `HS256` verification would have failed on every real token. Fixed by rewriting `auth.py` to verify against Supabase's public JWKS endpoint (`/auth/v1/.well-known/jwks.json`) via `PyJWKClient` instead — no shared secret needed at all. `SUPABASE_JWT_SECRET` is now unused and can be removed from `.env`/`config.py`. Confirmed working end-to-end: real Google-authenticated `user_id` (`06b0e979-...`) correctly extracted and persisted to `audit_runs`.
 
 ---
 
