@@ -6,7 +6,68 @@ Citadel AI is a governance layer that connects to your cloud ML infrastructure (
 
 > Status: **Private / in development.** This README doubles as the working architecture doc, build log, and task board ahead of DevThon (Aug 20–21, 2026).
 >
-> **This file is our shared notes app for the project** — keep it updated with what's done, what's broken, what's next, and who's doing what. Since the repo is private, feel free to be verbose here.
+> **This file is our shared notes app for the project** — keep it updated with what's done, what's broken, what's next, and who's doing what.
+
+---
+
+## 👋 New here? Start with this section (Akanksha)
+
+Welcome to the team. Backend, infra, AWS integration, and auth are **fully built and tested** — you don't need to touch any of that. Your job is frontend, and you have two tasks to get started tonight. Read this whole section before doing anything else.
+
+### Task 1 — Deploy the test model (mechanical, no coding)
+
+Clone the `Test-Model` repo (separate repo from this one — ask Aniketh for the link if you don't have it). Follow its README top to bottom:
+
+```bash
+python deploy.py
+```
+
+This deploys the demo hiring model to AWS SageMaker. A few things to expect:
+
+- **You'll probably hit dependency issues** (numpy/scipy/sklearn version mismatches). Don't panic — the `Test-Model` README has the exact fix already documented from when this exact error happened before. Just match the versions pinned in `requirements1.txt`.
+- **If you get `Cannot create already existing endpoint configuration`** — that means a leftover config from a previous attempt. Delete it with the AWS CLI command already in that README, then retry.
+- **Ping Aniketh if you're stuck for more than 15 minutes** on any one error — most of what you'll hit has already been solved once and is documented.
+
+You are not writing any new code for this task — just running commands and following documented fixes if something breaks.
+
+### Task 2 — Start frontend (this is your real ownership piece)
+
+**Auth is done on the backend.** You don't need to build or understand any backend code — just call it.
+
+```js
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+// Login button:
+await supabase.auth.signInWithOAuth({ provider: 'google' })
+
+// On every API call to the backend, attach the session token:
+const { data: { session } } = await supabase.auth.getSession()
+fetch('http://localhost:8000/api/v1/governance/check', {
+  headers: { 'Authorization': `Bearer ${session.access_token}` },
+  ...
+})
+```
+
+Ask Aniketh for the real `SUPABASE_URL` and `SUPABASE_ANON_KEY` values (safe to share, they're meant to be public-facing).
+
+**Start with just two screens:**
+1. A login page (the Google sign-in button above)
+2. A CSV upload page that hits `POST /api/v1/governance/analyze-csv` (multipart file upload, needs the `Authorization` header above) and displays the returned DI/SPD results
+
+Keep it ugly/functional for now — styling and polish come later, once the core loop is visibly working end to end. See the **Frontend** section further down for the fuller screen list and the API shapes you'll be calling.
+
+### 🤖 Using Claude (or another AI assistant) to help you build
+
+You're welcome to paste this entire README into Claude (or ChatGPT, etc.) and ask it to help you build the frontend — that's exactly what it's for. A good first prompt is something like: *"Here's my project's README. I need to build a login page and a CSV upload page in [React/Next.js/whatever you're using] that call the API described here. Help me scaffold this."*
+
+**One important boundary — read this before you start:**
+
+- 🚫 **Do not modify any files inside `backend/`.** That includes `app/`, `config.py`, `main.py`, all of it. Everything backend-side is built, tested, and documented in this README already — it doesn't need touching, and unrelated changes there risk breaking things that are currently working and demo-ready.
+- ✅ **Your scope is the `frontend/` folder** (create it if it doesn't exist yet) — anything inside it is yours to build freely.
+- If you think something backend-side needs to change to support what you're building (a new endpoint, a different response shape, etc.) — **don't change it yourself, message Aniketh first.** It's a quick conversation, and it avoids two people editing the same backend code at once.
+- If Claude (or any AI tool) suggests editing a backend file to "fix" something for you, that's a sign to stop and ask a human on the team first, not a sign to proceed.
 
 ---
 
@@ -14,14 +75,12 @@ Citadel AI is a governance layer that connects to your cloud ML infrastructure (
 
 | Person | Focus |
 |---|---|
-| **Aniketh** | Core backend: LangGraph workflow, bias-engine wiring, Supabase persistence, API layer, CSV upload mode, **real AWS S3 Data Capture integration (done)** |
-| **Akanksha** | Will connect her own AWS account as a real end user (not a developer) closer to the hackathon, to validate the product from a fresh user's perspective. Onboarding notes below. |
+| **Aniketh** | Everything backend: LangGraph workflow, bias-engine wiring, Supabase persistence, API layer, CSV upload mode, real AWS S3 Data Capture integration, JWT auth via Supabase. All of this is done and verified against real infrastructure (see below) — not mocked. |
+| **Akanksha** | Frontend (login, upload mode, connect mode screens) + deploying/running the demo AWS model as a real end user closer to the hackathon, to validate the product from a fresh user's perspective. Onboarding above. |
 
 **Scope decision:** GCP and Azure connectors are cut entirely for the hackathon — AWS-only, for demo depth over breadth. `gcp_connector.py` / `azure_connector.py` have been deleted from the repo.
 
-**Sequencing update (Aug 8, day):** the real AWS integration — previously listed as last-priority/Akanksha's task — is **done**. Aniketh deployed the test model to a real SageMaker endpoint, sent real traffic, and wired `get_predictions()` to parse real S3 Data Capture logs end-to-end. Verified live against 235 real predictions (see below).
-
-**Sequencing update (Aug 8, evening):** JWT auth via Supabase (Google sign-in) is also done and verified end-to-end — real `user_id`s now flow through every governance check and persist correctly to Supabase, replacing the hardcoded demo user. Next: Akanksha starts frontend (login + upload/connect screens) against this real, working auth contract.
+**Where things stand (Aug 8):** the entire backend governance pipeline — AWS discovery, real S3 Data Capture parsing, bias analysis, Supabase persistence, and JWT authentication — is built and verified end-to-end against real cloud infrastructure, not mocks. What remains is almost entirely the product surface: frontend, and (separately, backend-side, not blocking frontend) real cross-account STS AssumeRole testing.
 
 ---
 
@@ -62,6 +121,7 @@ Citadel AI is a governance layer that connects to your cloud ML infrastructure (
         │  • AWS Tool Layer (STS assume-role, SageMaker, S3) ✅ LIVE│
         │  • EquiLens Bias Engine (SPD, DI, EOD, SHAP)           │
         │  • Supabase (tenants, endpoints, audit history) ✅ LIVE│
+        │  • Auth (Supabase JWT, Google sign-in) ✅ LIVE          │
         │  • Scheduler (daily audits per registered endpoint)    │
         │  • Alert Service (Slack / Jira)                        │
         └──────────────────────────────────────────────────────┘
@@ -76,19 +136,19 @@ Citadel AI is a governance layer that connects to your cloud ML infrastructure (
 | Node | What it does | Status |
 |---|---|---|
 | `discover_models` | Lists real SageMaker endpoints via `AWSConnector` | ✅ runs end-to-end against a real account; auth currently static keys only — real STS AssumeRole not yet tested end-to-end |
-| `monitor_predictions` | Pulls prediction data from discovered models | ✅ **real S3 Data Capture parsing done and verified** — `get_predictions()` no longer returns mock data; pulls, lists, and parses real `.jsonl` objects straight from S3 |
+| `monitor_predictions` | Pulls prediction data from discovered models | ✅ real S3 Data Capture parsing done and verified — `get_predictions()` pulls, lists, and parses real `.jsonl` objects straight from S3 |
 | `ingest_csv` | Upload-mode equivalent of discover+monitor — treats an uploaded CSV as one synthetic model, its rows as predictions | ✅ built and validated against 3 datasets (see below) |
-| `analyze_bias` | Calls EquiLens's real `analyze_bias()` / `compute_eod()` on the DataFrame of predictions | ✅ wired to real EquiLens functions; validated against a real-world dataset with a literature-known bias level, **and against real live AWS traffic** |
+| `analyze_bias` | Calls EquiLens's real `analyze_bias()` / `compute_eod()` on the DataFrame of predictions | ✅ wired to real EquiLens functions; validated against a real-world dataset with a literature-known bias level, and against real live AWS traffic |
 | `detect_violation` | Checks DI/SPD/EOD against thresholds, sets `needs_remediation` | ✅ working; both branches (violation / clean) confirmed on real data |
 | `remediate` | Suggests fixes; uses SHAP top-features if available, generic list otherwise | ⚠️ working but generic-only — SHAP explanation is currently unavailable in the live monitoring flow (see note below) |
 | `alert` | Logs alerts to `audit_log`; no external notification yet | ⚠️ audit-log only, no Slack/Jira integration yet |
-| `complete_workflow` | Records execution time, finalizes `workflow_status`, persists run to Supabase | ✅ persistence wired and verified live — `audit_runs`, `models`, `bias_metrics`, `alerts` all confirmed writing correctly, including from real AWS runs |
+| `complete_workflow` | Records execution time, finalizes `workflow_status`, persists run to Supabase under the real authenticated user | ✅ persistence wired and verified live — `audit_runs`, `models`, `bias_metrics`, `alerts` all confirmed writing correctly, including from real AWS runs and real Google-authenticated users |
 
 **SHAP note:** `get_shap_values(model, X_train, X_test)` in `explainer.py` requires a *trained model artifact*, not just prediction input/output. Neither the AWS monitoring pipeline nor CSV upload mode load a model artifact, so SHAP is currently explicitly marked unavailable (`root_causes.note`) rather than faked. Loading the model artifact for real SHAP explanations is unscoped work — needs a decision on *how* (pull from SageMaker model registry? require user to upload artifact separately?).
 
 ### 📄 Upload mode — done and validated
 
-New endpoint: `POST /api/v1/governance/analyze-csv` (multipart file upload, `python-multipart` dependency added).
+Endpoint: `POST /api/v1/governance/analyze-csv` (multipart file upload, requires `Authorization: Bearer <token>` header).
 
 Required CSV columns: `prediction`, `group` (sensitive attribute). Optional: `actual_label` (enables EOD). Column names must match exactly — no auto-mapping yet, caller renames before upload.
 
@@ -106,7 +166,7 @@ All three runs persisted correctly to Supabase (`audit_runs` + `models` every ti
 
 ### 🔌 Connect mode — real S3 Data Capture integration (done, verified Aug 8)
 
-**What changed:** `get_predictions()` in `aws_connector.py` previously always returned hardcoded mock predictions, even against a real endpoint. It now:
+**What it does:** `get_predictions()` in `aws_connector.py` no longer returns mock data. It now:
 
 1. Calls `describe_endpoint()` → `describe_endpoint_config()` on the live endpoint to **dynamically discover** its `DataCaptureConfig.DestinationS3Uri` — no bucket name is ever hardcoded, so this works for any user's account/endpoint, not just one AWS account.
 2. Lists and reads the real `.jsonl` Data Capture objects directly from S3 (`list_objects_v2` + `get_object`, no local disk writes).
@@ -155,28 +215,22 @@ This matches the raw `traffic.py` findings from the model-deployment side (male 
 - Scoped permissions needed: `sagemaker:ListEndpoints`, `sagemaker:DescribeEndpoint`, `sagemaker:DescribeEndpointConfig`, `s3:GetObject` + `s3:ListBucket` on the data-capture bucket.
 - **Data Capture must be enabled** on the target SageMaker endpoint at creation time — prerequisite for `monitor_predictions` to read anything real.
 - Real discovery tested with both placeholder credentials (correctly rejected with `UnrecognizedClientException`) and real credentials (correctly discovers endpoints + real prediction data), confirming auth wiring is genuinely live, not stubbed.
-- **Still not tested end-to-end:** real STS AssumeRole flow (cross-account). Everything validated so far used static access keys for the same account. Needs a second AWS account (e.g. Akanksha's) + a real trust-policy role to fully validate before the demo.
+- **Still not tested end-to-end:** real STS AssumeRole flow (cross-account). Everything validated so far used static access keys for the same account. Needs a second AWS account (e.g. Akanksha's) + a real trust-policy role to fully validate before the demo. **This is backend/infra work — not part of frontend scope.**
 
 ### 🔐 Auth — JWT via Supabase (done, verified Aug 8)
 
-**What changed:** every write-triggering governance route now requires a real, verified identity instead of the hardcoded `demo_user` UUID.
+**What it does:** every write-triggering governance route requires a real, verified identity instead of a hardcoded demo user.
 
-- Frontend flow (for whoever builds the UI): `supabase.auth.signInWithOAuth({ provider: 'google' })` → Supabase handles the OAuth dance → returns a session with a real JWT. Attach it as `Authorization: Bearer <token>` on every API call.
-- Backend: `app/auth.py` exposes a `get_current_user` FastAPI dependency, added to `/governance/check` and `/governance/analyze-csv`. It verifies the incoming JWT and returns the real `user_id` (`sub` claim), which then flows into `run_governance_check`/`run_csv_governance_check` → `insert_audit_run`, replacing the old hardcoded constant everywhere it mattered.
-- **Important gotcha, worth knowing if this ever needs debugging again:** this Supabase project issues **asymmetric `ES256`-signed JWTs** (via Supabase's newer JWT signing-keys system), not the legacy shared-secret `HS256` tokens. Verification is done against Supabase's public JWKS endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`) via `PyJWKClient`, not against a `SUPABASE_JWT_SECRET`. If you see `alg: "ES256"` in a decoded token header, that confirms which path applies — trying to verify it with a shared HS256 secret will fail every time, not because anything's broken, just the wrong method for this project's config.
-- `/governance/status` and `/governance/report` are currently **not** behind auth — they're read-only, filtered by `cloud_provider`/`model_id` rather than by user, and nothing public-facing depends on them yet. Worth revisiting before this is public.
+- Frontend flow: `supabase.auth.signInWithOAuth({ provider: 'google' })` → Supabase handles the OAuth dance → returns a session with a real JWT. Attach it as `Authorization: Bearer <token>` on every API call.
+- Backend: `app/auth.py` exposes a `get_current_user` FastAPI dependency, added to `/governance/check` and `/governance/analyze-csv`. It verifies the incoming JWT and returns the real `user_id` (`sub` claim), which flows into persistence — every `audit_runs` row now has the real user who triggered it.
+- **Gotcha worth knowing:** this Supabase project issues **asymmetric `ES256`-signed JWTs** (Supabase's newer JWT signing-keys system), not legacy shared-secret `HS256` tokens. Verification is done against Supabase's public JWKS endpoint (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`), not a shared secret.
+- `/governance/status` and `/governance/report` are currently **not** behind auth — read-only, filtered by `cloud_provider`/`model_id` rather than by user, nothing public-facing depends on them yet.
 
-**Live end-to-end test (Aug 8):** signed in with Google via a throwaway local test page → got a real Supabase session/JWT → curled `/governance/check` with it → backend correctly extracted the real `user_id` and logged/persisted under it:
-```
-"🚀 Governance check initiated by 06b0e979-0bbe-4678-82b7-02bd4bd6bd50"
-```
-confirmed in Supabase's `audit_runs` table as well — no more `00000000-...-0001` rows going forward.
+**Live end-to-end test (Aug 8):** signed in with Google → got a real Supabase session/JWT → curled `/governance/check` with it → backend correctly extracted the real `user_id` and persisted under it, confirmed directly in Supabase's `audit_runs` table. No more hardcoded demo-user rows going forward.
 
-Google OAuth setup itself: Google Cloud Console → OAuth consent screen (User type: **External**, Publishing status: **Testing**, both team members added as test users) → OAuth Client (Web application) → Authorized redirect URI set to `https://qxsyscrbnbrzzvctozht.supabase.co/auth/v1/callback` → Client ID + Secret pasted into Supabase's Google provider settings, toggled on.
+Google OAuth setup: Google Cloud Console → OAuth consent screen (User type: **External**, Publishing status: **Testing**, team members added as test users) → OAuth Client (Web application) → Authorized redirect URI `https://qxsyscrbnbrzzvctozht.supabase.co/auth/v1/callback` → Client ID + Secret pasted into Supabase's Google provider settings, toggled on.
 
 ### Data model (Supabase) — ✅ live and persisting
-
-
 
 ```
 users
@@ -188,14 +242,14 @@ users
             └─ alerts (model_id, alert_type, severity, message, metric_value, threshold, status)
 ```
 
-**Persistence is done.** `complete_workflow` writes a real `audit_runs` row every run, plus `models`/`bias_metrics`/`alerts` rows whenever a model was discovered (AWS or CSV). Verified via direct Supabase table checks and live HTTP `201 Created` responses across multiple Connect-mode and upload-mode test runs, including today's real AWS run.
+**Persistence is done.** `complete_workflow` writes a real `audit_runs` row every run, plus `models`/`bias_metrics`/`alerts` rows whenever a model was discovered (AWS or CSV), tied to the real authenticated user.
 
-**RLS is enabled** (Aug 8) — backend uses the `service_role` key so it bypasses RLS by design and persistence is unaffected. Real per-user RLS policies (`user_id = auth.uid()`) are still needed before any client talks to Supabase with the `anon` key (i.e. before frontend queries Supabase directly, if it ever does — right now everything should route through the FastAPI backend).
+**RLS is enabled** — backend uses the `service_role` key so it bypasses RLS by design and persistence is unaffected. Real per-user RLS policies (`user_id = auth.uid()`) are a defense-in-depth item for later — not needed for frontend to work, since frontend should always go through the FastAPI backend, never talk to Supabase directly.
 
 ### Scheduling — not started
 
 - In-process scheduler (APScheduler) to trigger `run_governance_check()` per registered endpoint at its configured daily time.
-- Manual on-demand check endpoint — **note:** actual route is `POST /governance/check`, not `/governance/run-now` as originally planned; update anything referencing the old name.
+- Manual on-demand check endpoint — **note:** actual route is `POST /governance/check`, not `/governance/run-now` as originally planned.
 - First connect should trigger an immediate run.
 
 ---
@@ -209,15 +263,15 @@ users
 
 ---
 
-## 🖥️ Frontend — starting now
+## 🖥️ Frontend — Akanksha's scope, starting now
 
-Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datadog / Wiz). Building minimal-and-working first, layering frameworks/polish later — not going deep on styling until the core loop is visible end to end.
+Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datadog / Wiz). Build minimal-and-working first, layer frameworks/polish later — don't go deep on styling until the core loop is visible end to end.
 
-**Plan:**
-- [ ] Login — via Supabase Auth (Google sign-in). Backend auth is done and tested; frontend just needs `supabase.auth.signInWithOAuth({ provider: 'google' })` and to attach `session.access_token` as `Authorization: Bearer <token>` on every API call. No backend work blocking this.
-- [ ] Upload-mode screen (CSV upload → DI/SPD/EOD results) — backend already stable, build against this first
-- [ ] Connect-mode screen (enter AWS credentials/role → discovered endpoints → run check → live results) — backend now validated end-to-end, safe to build against
-- [ ] Audit history view, pulling real `audit_runs`/`bias_metrics`/`alerts` from Supabase
+**Plan, in order:**
+- [ ] Login — Google sign-in via Supabase Auth (see snippet in onboarding section above). Backend is done and tested; nothing to build backend-side.
+- [ ] Upload-mode screen — CSV upload → `POST /governance/analyze-csv` → display DI/SPD/EOD results. Build against this first, it's the most stable backend path.
+- [ ] Connect-mode screen — form for AWS credentials/region → `POST /governance/check` → discovered endpoints + live bias results. Backend validated end-to-end, safe to build against.
+- [ ] Audit history view, pulling real `audit_runs`/`bias_metrics`/`alerts` (via backend endpoints, not direct Supabase queries)
 - [ ] Live-streaming audit log (SSE/websocket) rendering `audit_log` as it's generated
 - [ ] Counterfactual flip panel as the hero visual
 - [ ] Severity color language (green/amber/red)
@@ -234,31 +288,41 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - Governance workflow executes fully async end-to-end for **both** Connect mode (`discover → monitor → analyze → detect → remediate → alert → complete`) and Upload mode (`ingest_csv → analyze → detect → remediate → alert → complete`) without crashing
 - Real AWS auth confirmed both ways: rejects invalid/test credentials with a real `UnrecognizedClientException`, and succeeds with real credentials against a real account
 - **Real S3 Data Capture parsing confirmed** — 235 real predictions fetched, parsed, and correctly analyzed from a live SageMaker endpoint's capture logs
+- **Real JWT auth confirmed end-to-end** — Google sign-in via Supabase issues a real `ES256` JWT, backend verifies it against Supabase's public JWKS, extracts the real `user_id`, and that identity flows through the full governance workflow into Supabase
 - `workflow_status` correctly reflects failure vs. success
-- EquiLens's real `calculate_spd`, `calculate_di`, `compute_eod` are actually called by `analyze_bias` — validated against Kaggle Adult dataset (matches literature value) **and against real live AWS traffic** (matches the model's known bias pattern)
-- Persistence fully working: `audit_runs`, `models`, `bias_metrics`, `alerts` all confirmed writing to live Supabase across both modes, including real AWS runs
-- **Real JWT auth confirmed end-to-end** — Google sign-in via Supabase issues a real `ES256` JWT, backend verifies it against Supabase's public JWKS (no shared secret), extracts the real `user_id`, and that identity flows through the full governance workflow into Supabase — confirmed via a live test with a real Google account, replacing the hardcoded demo user entirely
+- EquiLens's real `calculate_spd`, `calculate_di`, `compute_eod` are actually called by `analyze_bias` — validated against Kaggle Adult dataset (matches literature value) **and** against real live AWS traffic (matches the model's known bias pattern)
+- Persistence fully working: `audit_runs`, `models`, `bias_metrics`, `alerts` all confirmed writing to live Supabase across both modes, including real AWS runs and real authenticated users
 - CSV upload mode fully working: `POST /governance/analyze-csv`, tested against 3 datasets covering both the violation branch and the clean-audit branch
 - Conditional graph branching (clean audit short-circuits past remediation/alerting) confirmed working on real data, not just by reading the code
 - AWS-only: `CloudProvider` enum, request/response models, and all node branching now AWS-only; GCP/Azure code deleted
 
 ## ⏳ To-do (prioritized for Aug 20 build)
 
-### High priority — core loop
+### High priority — core loop (backend, Aniketh)
 - [x] ~~Persist governance workflow runs to Supabase~~ ✅ done
 - [x] ~~Build CSV upload mode~~ ✅ done, verified against 3 datasets
 - [x] ~~Real S3 Data Capture log fetch in `get_predictions()`~~ ✅ done, verified against 235 real predictions
 - [x] ~~End-to-end test with real AWS credentials~~ ✅ done
-- [ ] Real STS AssumeRole flow, tested cross-account (needed before Akanksha connects as a separate real user)
-- [x] ~~JWT auth via Supabase (Google sign-in)~~ ✅ **done Aug 8** — replaced hardcoded `demo_user` UUID with real `user_id` extracted from a verified Supabase JWT on every protected route. See auth details below.
-- [x] ~~RLS enabled on Supabase tables~~ ✅ enabled Aug 8 — backend confirmed still writing correctly using the `service_role` key (see bug log below). Real per-user RLS *policies* (`user_id = auth.uid()`) still worth writing as defense-in-depth, though the backend itself now enforces per-user identity at the API layer via JWT verification, not just at the DB layer.
-- [ ] Investigate `.env` parse warnings (`Python-dotenv could not parse statement starting at line 7-21`) — didn't break anything today, but worth cleaning up before it silently hides a real config issue later
-- [ ] Decide whether `/governance/status` and `/governance/report` should also require auth — currently open/unauthenticated, fine for now since nothing public-facing depends on them yet
-- [ ] `/governance/status`, `/governance/remediate`, `/governance/report` endpoints — currently hardcoded placeholder responses; unblocked by persistence, needs real queries
-- [ ] `clouds.py` — `connect`/`list`/`disconnect`/`test` endpoints are placeholder-only; need real Supabase reads/writes to `cloud_accounts`
+- [x] ~~JWT auth via Supabase (Google sign-in)~~ ✅ done, verified end-to-end
+- [x] ~~RLS enabled on Supabase tables~~ ✅ done
+- [ ] Real STS AssumeRole flow, tested cross-account (needed before Akanksha connects as a separate real user — backend/infra, not frontend)
+- [ ] Real per-user RLS policies (`user_id = auth.uid()`) — defense-in-depth, not blocking
+- [ ] Investigate `.env` parse warnings — didn't break anything, worth cleaning up
+- [ ] Decide whether `/governance/status` and `/governance/report` should require auth too
+- [ ] `/governance/remediate` — currently a stub, needs real logic
+- [ ] `clouds.py` — `connect`/`list`/`disconnect`/`test` endpoints are placeholder-only
 - [ ] Add `_safe_uuid()` guard in `db.py` around all UUID-typed inserts
-- [ ] Clearer error when Connect-mode `region` doesn't match the target endpoint's actual region (currently silently returns 0 models discovered, easy to mistake for an auth bug — see today's incident above)
-- [ ] Optional: column auto-mapping / friendlier error for CSV upload (currently requires exact `prediction`/`group` column names)
+- [ ] Clearer error when Connect-mode `region` doesn't match the target endpoint's actual region (currently silently returns 0 models discovered)
+- [ ] Optional: column auto-mapping / friendlier error for CSV upload
+
+### High priority — frontend (Akanksha, starting now)
+- [ ] Login (Google via Supabase Auth)
+- [ ] Upload-mode screen
+- [ ] Connect-mode screen
+- [ ] Audit history view
+- [ ] Live audit-log stream UI
+- [ ] Counterfactual flip visual
+- [ ] Historical trend chart
 
 ### Medium priority — differentiators
 - [ ] Counterfactual flip testing node
@@ -266,21 +330,13 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - [ ] Slack webhook alert integration
 - [ ] Scheduler (APScheduler) + manual "run now" endpoint
 
-### Frontend
-- [ ] Login (Google via Supabase Auth) + two-mode entry (upload / connect AWS)
-- [ ] Upload-mode screen
-- [ ] Connect-mode screen
-- [ ] Live audit-log stream UI
-- [ ] Counterfactual flip visual
-- [ ] Historical trend chart
-
 ### Lower priority / post-hackathon
 - [ ] Adversarial probing node
 - [ ] Fairness policy-as-code + CI/CD gate
 - [ ] Jira/GitHub alert integrations
-- [ ] Pydantic field renames (`model_id` → `model_identifier`, silences the protected-namespace warning)
+- [ ] Pydantic field renames (`model_id` → `model_identifier`)
 - [ ] Unit/integration test suite
-- [x] ~~CORS hole~~ ✅ fixed — `allow_origins` scoped via `ALLOWED_ORIGINS` env var, `allow_credentials=False` until real auth exists
+- [x] ~~CORS hole~~ ✅ fixed
 
 ---
 
@@ -294,26 +350,25 @@ Dark, dense, data-forward — governance/security tool aesthetic (Linear / Datad
 - `config.py`'s `.env` path was relative to CWD, not to the file itself → only worked when run from inside `backend/`.
 - `analyzer.py`'s `analyze_bias()` would raise `IndexError` on an empty/all-null target column.
 - Dependency cascade: `supabase==2.4.0` pinned an old `httpx`, which itself was too old for `gotrue`'s `proxy` kwarg usage; upgrading `supabase` then needed a `websockets` bump, which overshot `realtime`'s own pin. Resolved by aligning versions; `requirements.txt` regenerated from the working environment via `pip freeze`.
-- `CORSMiddleware` used `allow_origins=["*"]` + `allow_credentials=True` simultaneously — invalid combination per spec, and a real open-CORS hole. Fixed via `ALLOWED_ORIGINS` env var + `allow_credentials=False` until JWT auth exists.
+- `CORSMiddleware` used `allow_origins=["*"]` + `allow_credentials=True` simultaneously — invalid combination per spec, and a real open-CORS hole. Fixed via `ALLOWED_ORIGINS` env var + `allow_credentials=False` until JWT auth existed.
 - `config.py` edit landed an `ALLOWED_ORIGINS` field + `allowed_origins_list` property at **module level**, outside the `Settings` class entirely — silent no-op until `main.py` tried to access `settings.allowed_origins_list` and hit `AttributeError`.
 - `insert_audit_run()` wrote to `audit_runs`, a table `INIT_SQL` never actually created (only `audit_logs`, a different table/schema, existed). Silent failure caught by the persistence try/except — no crash, but nothing ever actually saved. Fixed by creating the missing table directly in Supabase.
-- API layer hardcoded `user_id="demo_user"` (not a valid UUID) against a UUID-typed FK column → every persist attempt failed with `invalid input syntax for type uuid`. Fixed with a real demo user row + a named UUID constant.
+- API layer hardcoded `user_id="demo_user"` (not a valid UUID) against a UUID-typed FK column → every persist attempt failed with `invalid input syntax for type uuid`. Fixed with a real demo user row + a named UUID constant, later replaced entirely by real JWT auth.
 - `ingest_csv` was accidentally pasted into `state.py` instead of `nodes.py`, type-hinted with `CitadelState` before that class was defined later in the same file → circular self-import. Fixed by moving the function to `nodes.py`.
 - `python-multipart` wasn't installed — required by FastAPI for any `UploadFile`/`File(...)` endpoint, silent until the CSV upload endpoint was actually added.
-- **(new)** First draft of the real `get_predictions()` rewrite got pasted back into the file with broken indentation — `async def get_predictions`, `_parse_s3_uri`, `_fetch_and_parse_capture_logs`, and `_parse_capture_line` all landed at module level (column 0) instead of indented inside `class AWSConnector`. Would have raised `AttributeError: 'AWSConnector' object has no attribute 'get_predictions'` at call time. Fixed by rewriting the full file with correct indentation.
-- **(new)** First live Connect-mode test with real credentials returned `models_discovered: 0`. Not an auth or discovery bug — the request specified `region: "us-east-1"` while the endpoint was actually deployed in `ap-south-1`. SageMaker endpoint listing is region-scoped, so the search legitimately found nothing. Fixed by correcting the region in the request.
-- **(new)** Enabled RLS on Supabase tables — immediately after, every governance-check run started failing to persist with `code: '42501', "new row violates row-level security policy for table \"audit_runs\""` (Supabase itself returned `401 Unauthorized`). Root cause: the backend's `SUPABASE_KEY` was the `anon` key, which *is* subject to RLS, and zero policies existed yet (default-deny). The workflow itself ran fine end-to-end — only the final persistence step broke. Fixed by switching `SUPABASE_KEY` in `.env` to the `service_role` key, which bypasses RLS by design — the correct pattern for a trusted backend service, not a workaround. Confirmed fixed: re-ran the same check, got `201 Created` on `audit_runs`/`bias_metrics`/`alerts` again. Real per-row RLS policies (`user_id = auth.uid()`) still need writing before any browser/frontend code talks to Supabase directly with the `anon` key.
-- **(new)** Enabled RLS on Supabase tables — immediately after, every governance-check run started failing to persist with `code: '42501', "new row violates row-level security policy for table \"audit_runs\""` (Supabase itself returned `401 Unauthorized`). Root cause: the backend's `SUPABASE_KEY` was the `anon` key, which *is* subject to RLS, and zero policies existed yet (default-deny). The workflow itself ran fine end-to-end — only the final persistence step broke. Fixed by switching `SUPABASE_KEY` in `.env` to the `service_role` key, which bypasses RLS by design — the correct pattern for a trusted backend service, not a workaround. Confirmed fixed: re-ran the same check, got `201 Created` on `audit_runs`/`bias_metrics`/`alerts` again. Real per-row RLS policies (`user_id = auth.uid()`) still need writing before any browser/frontend code talks to Supabase directly with the `anon` key.
-- **(new)** After the `service_role` key swap, uvicorn logged 12x `Python-dotenv could not parse statement starting at line N` on startup. Didn't break anything (app started, Supabase connected, workflow persisted fine), but flagged as a real `.env` formatting issue to track down before it masks something that actually matters — likely an unescaped/unquoted value or stray line format somewhere around lines 7–21.
-- **(new)** `run_governance_workflow` in `governance.py` was updated to reference `user_id` (from the new auth dependency) inside the function body, but the function *signature* wasn't updated to actually declare `user_id: str = Depends(get_current_user)` as a parameter — would have raised `NameError: name 'user_id' is not defined` on every call. Two passes were needed to fully catch this since the first "fix" only updated the body, not the signature. Fixed by adding the parameter to the signature.
-- **(new)** First version of a standalone local test page (used to grab a real JWT for curl testing before frontend existed) threw `Uncaught SyntaxError: Identifier 'supabase' has already been declared`. Cause: the Supabase CDN script exposes a global `window.supabase`, and the test page's own code also declared `const supabase = window.supabase.createClient(...)` in the same scope — a naming collision, not a real logic bug. Fixed by renaming the local client variable to `sb`.
-- **(new)** First `auth.py` implementation verified JWTs using `HS256` against a shared `SUPABASE_JWT_SECRET` — the legacy Supabase auth signing method. Once a real token was obtained and inspected, its header showed `"alg":"ES256"` — this Supabase project uses the newer **asymmetric JWT signing keys** system, not the legacy shared secret. `HS256` verification would have failed on every real token. Fixed by rewriting `auth.py` to verify against Supabase's public JWKS endpoint (`/auth/v1/.well-known/jwks.json`) via `PyJWKClient` instead — no shared secret needed at all. `SUPABASE_JWT_SECRET` is now unused and can be removed from `.env`/`config.py`. Confirmed working end-to-end: real Google-authenticated `user_id` (`06b0e979-...`) correctly extracted and persisted to `audit_runs`.
+- First draft of the real `get_predictions()` rewrite got pasted back into the file with broken indentation — several methods landed at module level instead of indented inside `class AWSConnector`. Would have raised `AttributeError` at call time. Fixed by rewriting the full file with correct indentation.
+- First live Connect-mode test with real credentials returned `models_discovered: 0`. Not an auth or discovery bug — the request specified the wrong region (`us-east-1` instead of `ap-south-1`, where the endpoint actually lives). SageMaker endpoint listing is region-scoped. Fixed by correcting the region in the request.
+- Enabling RLS on Supabase tables immediately broke persistence (`42501`, "new row violates row-level security policy") because the backend was using the `anon` key, which *is* subject to RLS, with zero policies defined yet (default-deny). Fixed by switching to the `service_role` key, which bypasses RLS by design — correct for a trusted backend, not a workaround.
+- After the `service_role` key swap, uvicorn logged repeated `Python-dotenv could not parse statement` warnings on startup. Didn't break anything, flagged for later cleanup — likely an unescaped/unquoted `.env` value.
+- `run_governance_workflow`'s function *signature* wasn't updated when auth was added to its body — `user_id` was referenced before it was ever declared as a parameter, which would have raised `NameError` on every call. Fixed by adding `user_id: str = Depends(get_current_user)` to the signature.
+- A standalone local test page (used to grab a real JWT before frontend existed) threw `Uncaught SyntaxError: Identifier 'supabase' has already been declared` — a naming collision between the Supabase CDN's global `window.supabase` and a locally-declared `const supabase`. Fixed by renaming the local variable.
+- First `auth.py` implementation verified JWTs using `HS256` against a shared secret — the *legacy* Supabase auth method. A real token's header showed `"alg":"ES256"` — this project uses Supabase's newer **asymmetric JWT signing keys**. Fixed by rewriting `auth.py` to verify against Supabase's public JWKS endpoint instead, no shared secret needed. Confirmed working end-to-end with a real Google-authenticated user.
 
 ---
 
 ## 🔧 Useful AWS commands (Test-Model repo, reusable for future sessions)
 
-These live in the sibling `Test-Model` repo (the intentionally-biased hiring model used as Citadel's demo ground truth). Keeping them here too since they'll be needed again before every demo/redeploy cycle.
+These live in the sibling `Test-Model` repo (the intentionally-biased hiring model used as Citadel's demo ground truth).
 
 **Check what's running / billing:**
 ```bash
@@ -381,7 +436,16 @@ aws service-quotas list-service-quotas \
 aws sagemaker delete-endpoint-config --endpoint-config-name citadel-biased-hiring-endpoint --region ap-south-1
 ```
 
-**Reminder — region matters everywhere:** the endpoint lives in `ap-south-1`. Any AWS CLI command, and any Connect-mode request to Citadel's API, must use the matching region or it'll silently find nothing (see bug log above).
+**Reminder — region matters everywhere:** the endpoint lives in `ap-south-1`. Any AWS CLI command, and any Connect-mode request to Citadel's API, must use the matching region or it'll silently find nothing.
+
+---
+
+## 📜 Contribution guidelines
+
+- **`backend/`** — owned by Aniketh. Fully built, tested against real infrastructure. Do not edit unless discussed first — a quick message beats two people touching the same working code at once.
+- **`frontend/`** — owned by Akanksha. Build freely here.
+- If a frontend need implies a backend change (new endpoint, different response shape, etc.), raise it as a conversation, not a direct edit.
+- Keep this README updated as things change — it's the shared source of truth for the team and for AI tools either of us pastes it into.
 
 ---
 
