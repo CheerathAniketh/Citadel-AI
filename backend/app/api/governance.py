@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Depends
+from app.auth import get_current_user
 from typing import Dict, Any
 import logging
 from app.workflows.graph import run_governance_check, run_csv_governance_check
@@ -19,11 +20,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"  # TODO: replace once auth lands
+
 
 
 @router.post("/governance/analyze-csv")
-async def analyze_csv_upload(file: UploadFile = File(...)):
+async def analyze_csv_upload(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user)
+):
     """
     Upload-mode governance check. Same bias analysis as Connect mode, run on a
     user-supplied CSV instead of live AWS predictions.
@@ -44,14 +48,13 @@ async def analyze_csv_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"CSV missing required column(s): {missing}")
 
     try:
-        return await run_csv_governance_check(user_id=DEMO_USER_ID, filename=file.filename, df=df)
+        return await run_csv_governance_check(user_id=user_id, filename=file.filename, df=df)
     except Exception as e:
         logger.error(f"❌ CSV governance check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/governance/check", response_model=GovernanceCheckResponse)
-async def run_governance_workflow(request: GovernanceCheckRequest):
+async def run_governance_workflow(request: GovernanceCheckRequest, user_id: str = Depends(get_current_user)):
     """
     Execute full governance workflow on connected cloud
 
@@ -83,7 +86,7 @@ Example:
         logger.info(f"🎯 Starting governance check for {request.cloud_provider}...")
 
         final_state = await run_governance_check(
-            user_id=DEMO_USER_ID,  # TODO: Get from auth
+            user_id= user_id,  
             cloud_provider=request.cloud_provider,
             cloud_credentials=request.credentials
         )

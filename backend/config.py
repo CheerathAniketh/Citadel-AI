@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     # Database (Supabase)
     SUPABASE_URL: str
     SUPABASE_KEY: str
-    
+
+    #JWT
+    SUPABASE_JWT_SECRET: str
     # AWS
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
