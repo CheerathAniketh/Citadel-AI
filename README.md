@@ -463,6 +463,61 @@ aws sagemaker delete-endpoint-config --endpoint-config-name citadel-biased-hirin
 
 ---
 
+## 📅 Aug 13 — Session log
+
+Aniketh solo today (Akanksha busy) — backend hardening + frontend, both now Aniketh's scope. Frontend build order/plan below supersedes the "Akanksha" ownership note earlier in this doc; update once she's back.
+
+### ✅ STS AssumeRole — fully verified end-to-end (was: "not yet tested")
+
+- Created `CitadelGovernanceRole` in the same AWS account (`447788060954`). Trust policy: only `Aniketh-admin` (IAM user) can assume it. Permissions: read-only — `sagemaker:ListEndpoints`, `DescribeEndpoint`, `DescribeEndpointConfig`, plus `s3:GetObject`/`ListBucket` scoped to the data-capture bucket only.
+- Verified the raw handshake first (`aws sts assume-role` → got back `ASIA...` temporary credentials).
+- Verified through actual app code: a throwaway script called `AWSConnector` with **only** `iam_role_arn` (no static keys) — correctly returned `[]` when no endpoint existed, then correctly discovered the real `citadel-biased-hiring-endpoint` after redeploying it.
+- Verified through the **real API**, real JWT, full pipeline: `POST /governance/check` with `iam_role_arn` → JWT verified → STS AssumeRole → discovered live endpoint → pulled 238 real predictions from S3 Data Capture → EquiLens computed DI=0.00 / SPD=0.3694 → critical alert fired → persisted to Supabase (`audit_run 4cfc594f-8ddc-4ebf-b8fa-a49b1340d4a3`).
+- Scope note: this is **same-account** AssumeRole, not cross-account. True cross-account (a second AWS account trusting Citadel's identity) is still unverified — see "Identified, not yet fixed" below.
+
+### ✅ `_safe_uuid()` guard — confirmed already correctly placed
+
+- Already guards `user_id` in `insert_audit_run` (the one value that historically came from unreliable input — the old `"demo_user"` string bug). All other UUIDs in `db.py` (`model_uuid`) come from Supabase's own generated IDs, not external input, so no other insert path needed it.
+- Small hardening added: `_safe_uuid()` now logs a warning when it silently converts a bad value to `NULL`, instead of failing silently (same *shape* of bug as the earlier `audit_runs` table-didn't-exist incident — a bad value disappearing quietly instead of surfacing).
+
+### ✅ `/governance/status` and `/governance/report` — auth added
+
+- Both were fully public (no token required at all) — real exposure once multi-tenant, since bias findings/alerts are sensitive. Added `user_id: str = Depends(get_current_user)` to both, matching the other two routes.
+- **Partial fix, documented as such**: requiring login doesn't yet mean requests are *scoped* to that login — results still filter only by `cloud_provider`/`model_id`, not by owner, because `models.user_id` isn't populated on insert. Real per-user scoping needs `upsert_model()` updated (prototyped today, not landed — see below) plus a uniqueness key change.
+
+### ✅ CSV upload — case-insensitive column matching + "did you mean" suggestions
+
+- Was hard-failing on any column name that wasn't an exact `prediction`/`group` match (e.g. `adult_processed.csv` using `income`/`sex`), with no guidance.
+- Fixed with `_resolve_columns()`: safe case-insensitive exact matching only (`Income` → `income`), **not** semantic auto-mapping (`sex` → `group`) — a wrong guess on the sensitive attribute would silently produce an incorrect bias report, worse than an explicit error for this specific product.
+- Missing-column errors now return `available_columns` and `did_you_mean` (via `difflib.get_close_matches`) so the user can rename with confidence instead of guessing.
+
+### ✅ Frontend — built from scratch (Akanksha's scope until today)
+
+- Vanilla HTML/CSS/JS, no build step, in `frontend/`: `index.html`, `style.css`, `config.js`, `app.js`.
+- Screens: Login (Supabase Google OAuth) → tabs for Upload CSV, Connect AWS, Status & Reports.
+- Renders real parsed results (DI/SPD/EOD metric cards, color-coded status badges, alerts, recommendations) with a collapsible raw-JSON view for debugging, not just a JSON dump.
+- `config.js` isolates `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`API_BASE_URL` — the one file to edit when moving from `localhost:8000` to a deployed backend (e.g. Render).
+- `dev-tools/debug-console.html` — separate, smaller throwaway page built earlier today for raw API testing before the real frontend existed. Not part of the product, not in `frontend/`.
+
+### 🐛 Bugs hit + fixed today
+
+- **CORS**: `ALLOWED_ORIGINS` wasn't set in `.env` at all — frontend's `OPTIONAL /governance/analyze-csv` preflight got `400`. Fixed by adding `ALLOWED_ORIGINS=http://localhost:5500,http://localhost:5173,http://localhost:8000` and restarting uvicorn (`.env` changes aren't always picked up by `--reload`).
+- **Transient DNS failure**: `PyJWKClientConnectionError` / `socket.gaierror` fetching Supabase's JWKS mid-request — momentary network blip, not a code issue. Confirmed via `ping`/`curl` succeeding right after; retry succeeded with no changes.
+- **IAM ARN casing**: trust policy principal was typed as `aniketh-admin`, actual user is `Aniketh-admin` (capital A) — IAM ARNs are case-sensitive, would have silently failed the trust check. Caught before running `create-role`.
+
+### 🔍 Identified today, not yet fixed (deliberately deferred)
+
+- **`upsert_model()` doesn't set `user_id`**, even though `models.user_id` exists in the schema — prototyped a fix, held off landing it because the underlying uniqueness key is still `(cloud_provider, model_id)`, not `(cloud_provider, model_id, user_id)`. If Akanksha (or anyone) reuses a `model_id` string like `citadel-biased-hiring-endpoint`, the model row would get silently reassigned between users, not duplicated per-user. Needs the composite-key fix done properly, not rushed.
+- **"Who is Citadel" identity problem for real cross-account use**: right now STS AssumeRole works because the backend inherits Aniketh's local `~/.aws/credentials`. A real external user's trust policy needs a stable, known Citadel service identity (not "whoever's laptop is running uvicorn"). Not blocking the Akanksha two-account demo plan, but blocking genuine "anyone in the world can connect their AWS account" — noted, explicitly parked for post-hackathon.
+- **Render deployment gaps identified, not yet actioned**: no local `~/.aws/credentials` on Render → needs static base AWS keys as env vars; `ALLOWED_ORIGINS` needs the deployed frontend's real domain; Supabase OAuth redirect URI needs the deployed frontend URL added; Google OAuth consent screen is still in "Testing" mode (only added test users can log in — a judge trying with their own Google account would be rejected).
+- **`INIT_SQL` doc drift**: doesn't define `audit_runs` (only `audit_logs`) — matches a bug already fixed live in Supabase, but the fix never made it back into this file. Cosmetic, but would reproduce the same bug if the schema's ever rebuilt from scratch.
+
+### Next up
+
+- Akanksha + own-AWS-account cross-account demo prep (separate account, her own `CitadelGovernanceRole`-equivalent trusting Aniketh's identity)
+- Render deployment (env vars, CORS, OAuth redirect, Google consent screen)
+- `clouds.py` — still fully stubbed, not on the `/governance/check` path, deferred
+
 ## 📚 Stack
 
 FastAPI · LangGraph · LangChain · boto3 (AWS) · Supabase (Postgres, Auth) · SHAP · scikit-learn · pandas · React/Next.js frontend
