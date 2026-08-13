@@ -161,7 +161,7 @@ def get_alerts_in_range(start_iso: str, end_iso: str, model_uuid: str = None) ->
     result = query.execute()
     return result.data or []
 
-
+## TODO: filter by model ownership once models.user_id is populated
 # SQL to create tables (run manually in Supabase SQL editor if needed)
 INIT_SQL = """
 -- Users table

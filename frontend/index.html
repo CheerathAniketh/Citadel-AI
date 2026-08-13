@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Citadel AI — Governance Dashboard</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<!-- ===================== LOGIN SCREEN ===================== -->
+<div id="loginScreen" class="screen centered">
+  <div class="login-card">
+    <div class="brand">CITADEL<span>AI</span></div>
+    <p class="tagline">AI governance &amp; bias detection</p>
+    <button id="loginBtn" class="btn-primary">Sign in with Google</button>
+    <p id="loginError" class="error-text"></p>
+  </div>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="app" class="screen hidden">
+  <header class="topbar">
+    <div class="brand small">CITADEL<span>AI</span></div>
+    <div class="topbar-right">
+      <span id="userEmail" class="user-email"></span>
+      <button id="logoutBtn" class="btn-ghost">Sign out</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="upload">Upload CSV</button>
+    <button class="tab-btn" data-tab="connect">Connect AWS</button>
+    <button class="tab-btn" data-tab="history">Status &amp; Reports</button>
+  </nav>
+
+  <main class="content">
+
+    <!-- ---------- UPLOAD TAB ---------- -->
+    <section id="tab-upload" class="tab-panel active">
+      <h1>Upload-mode audit</h1>
+      <p class="hint">CSV must include <code>prediction</code> and <code>group</code> columns. Optional <code>actual_label</code> enables Equalized Odds.</p>
+
+      <div class="panel">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="csvInput" accept=".csv" hidden />
+          <span id="dropzoneText">Click to choose a CSV, or drag one here</span>
+        </label>
+        <button id="uploadBtn" class="btn-primary" disabled>Run audit</button>
+      </div>
+
+      <div id="uploadResult"></div>
+    </section>
+
+    <!-- ---------- CONNECT TAB ---------- -->
+    <section id="tab-connect" class="tab-panel">
+      <h1>Connect-mode audit</h1>
+      <p class="hint">Discovers live SageMaker endpoints via AWS STS AssumeRole and audits real traffic from S3 Data Capture logs.</p>
+
+      <div class="panel">
+        <div class="field-row">
+          <div class="field">
+            <label>AWS account ID</label>
+            <input id="accountId" placeholder="447788060954" />
+          </div>
+          <div class="field">
+            <label>Region</label>
+            <input id="region" placeholder="ap-south-1" />
+          </div>
+        </div>
+        <div class="field">
+          <label>IAM role ARN</label>
+          <input id="roleArn" placeholder="arn:aws:iam::447788060954:role/CitadelGovernanceRole" />
+        </div>
+        <button id="connectBtn" class="btn-primary">Run governance check</button>
+      </div>
+
+      <div id="connectResult"></div>
+    </section>
+
+    <!-- ---------- HISTORY TAB ---------- -->
+    <section id="tab-history" class="tab-panel">
+      <h1>Status &amp; reports</h1>
+      <div class="panel">
+        <div class="field-row">
+          <div class="field">
+            <label>Cloud provider</label>
+            <input id="histCloud" value="aws" />
+          </div>
+          <div class="field">
+            <label>Model ID (optional)</label>
+            <input id="histModelId" placeholder="citadel-biased-hiring-endpoint/AllTraffic" />
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="statusBtn" class="btn-secondary">Get status</button>
+          <button id="reportBtn" class="btn-secondary">Get 30-day report</button>
+        </div>
+      </div>
+      <div id="historyResult"></div>
+    </section>
+
+  </main>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
