@@ -21,16 +21,78 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def build_governance_response(final_state: dict) -> GovernanceCheckResponse:
+    """
+    Single source of truth for turning a raw workflow-graph final_state into
+    the API's GovernanceCheckResponse shape. Both Connect mode (run_governance_check)
+    and Upload mode (run_csv_governance_check) produce the same final_state shape
+    (discovered_models / bias_metrics / alerts / recommended_fixes / audit_log —
+    see graph.py docstring), so this is the one place that reshapes it into the
+    response contract. Neither route should build this dict by hand — if the
+    response shape ever needs to change, it changes here once, for both modes.
+    """
+    bias_metrics_raw = final_state.get('bias_metrics') or {}
+    timestamp_str = bias_metrics_raw.get('timestamp')
+    response_timestamp = (
+        datetime.fromisoformat(timestamp_str) if timestamp_str
+        else final_state.get('workflow_end_time') or datetime.now()
+    )
+
+    alerts = [
+        {
+            'id': f"alert_{i}",
+            'alert_type': a.get('type', 'bias_warning'),
+            'severity': a.get('severity', 'warning'),
+            'message': a.get('message', ''),
+            'metric_value': a.get('value'),
+            'threshold': a.get('threshold'),
+            'created_at': response_timestamp,
+            'status': 'active'
+        }
+        for i, a in enumerate(final_state.get('alerts', []))
+    ]
+
+    recommendations = [
+        {
+            'action': r.get('action', ''),
+            'feature': r.get('feature'),
+            'reason': r.get('reason', ''),
+            'expected_impact': r.get('expected_impact', '')
+        }
+        for r in final_state.get('recommended_fixes', [])
+    ]
+
+    return GovernanceCheckResponse(
+        status=final_state.get('workflow_status', 'failed'),
+        models_discovered=final_state.get('discovered_count', 0),
+        bias_metrics={
+            model_id: {
+                'disparate_impact': bias_metrics_raw.get('disparate_impact'),
+                'statistical_parity_diff': bias_metrics_raw.get('statistical_parity_diff'),
+                'equalized_odds': bias_metrics_raw.get('equalized_odds'),
+                'samples_count': bias_metrics_raw.get('samples_count', 0),
+                'affected_count': 0,  # TODO: Calculate
+                'timestamp': response_timestamp,
+                'status': bias_metrics_raw.get('status', 'unknown')
+            }
+            for model_id in [m['id'] for m in final_state.get('discovered_models', [])]
+        },
+        alerts=alerts,
+        recommendations=recommendations,
+        audit_log=final_state.get('audit_log', []),
+        timestamp=response_timestamp
+    )
 
 
-@router.post("/governance/analyze-csv")
+@router.post("/governance/analyze-csv", response_model=GovernanceCheckResponse)
 async def analyze_csv_upload(
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user)
 ):
     """
     Upload-mode governance check. Same bias analysis as Connect mode, run on a
-    user-supplied CSV instead of live AWS predictions.
+    user-supplied CSV instead of live AWS predictions. Response shape is
+    identical to /governance/check — both go through build_governance_response.
 
     Required columns: 'prediction', 'group'. Optional: 'actual_label' (enables EOD).
     """
@@ -48,10 +110,14 @@ async def analyze_csv_upload(
         raise HTTPException(status_code=400, detail=f"CSV missing required column(s): {missing}")
 
     try:
-        return await run_csv_governance_check(user_id=user_id, filename=file.filename, df=df)
+        final_state = await run_csv_governance_check(user_id=user_id, filename=file.filename, df=df)
+        response = build_governance_response(final_state)
+        logger.info(f"✅ CSV governance check complete: {response.status}")
+        return response
     except Exception as e:
         logger.error(f"❌ CSV governance check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/governance/check", response_model=GovernanceCheckResponse)
 async def run_governance_workflow(request: GovernanceCheckRequest, user_id: str = Depends(get_current_user)):
@@ -86,62 +152,12 @@ Example:
         logger.info(f"🎯 Starting governance check for {request.cloud_provider}...")
 
         final_state = await run_governance_check(
-            user_id= user_id,  
+            user_id=user_id,
             cloud_provider=request.cloud_provider,
             cloud_credentials=request.credentials
         )
 
-        bias_metrics_raw = final_state.get('bias_metrics') or {}
-        timestamp_str = bias_metrics_raw.get('timestamp')
-        response_timestamp = (
-            datetime.fromisoformat(timestamp_str) if timestamp_str
-            else final_state.get('workflow_end_time') or datetime.now()
-        )
-
-        alerts = [
-            {
-                'id': f"alert_{i}",
-                'alert_type': a.get('type', 'bias_warning'),
-                'severity': a.get('severity', 'warning'),
-                'message': a.get('message', ''),
-                'metric_value': a.get('value'),
-                'threshold': a.get('threshold'),
-                'created_at': response_timestamp,
-                'status': 'active'
-            }
-            for i, a in enumerate(final_state.get('alerts', []))
-        ]
-
-        recommendations = [
-            {
-                'action': r.get('action', ''),
-                'feature': r.get('feature'),
-                'reason': r.get('reason', ''),
-                'expected_impact': r.get('expected_impact', '')
-            }
-            for r in final_state.get('recommended_fixes', [])
-        ]
-
-        response = GovernanceCheckResponse(
-            status=final_state.get('workflow_status', 'failed'),
-            models_discovered=final_state.get('discovered_count', 0),
-            bias_metrics={
-                model_id: {
-                    'disparate_impact': bias_metrics_raw.get('disparate_impact'),
-                    'statistical_parity_diff': bias_metrics_raw.get('statistical_parity_diff'),
-                    'equalized_odds': bias_metrics_raw.get('equalized_odds'),
-                    'samples_count': bias_metrics_raw.get('samples_count', 0),
-                    'affected_count': 0,  # TODO: Calculate
-                    'timestamp': response_timestamp,
-                    'status': bias_metrics_raw.get('status', 'unknown')
-                }
-                for model_id in [m['id'] for m in final_state.get('discovered_models', [])]
-            },
-            alerts=alerts,
-            recommendations=recommendations,
-            audit_log=final_state.get('audit_log', []),
-            timestamp=response_timestamp
-        )
+        response = build_governance_response(final_state)
 
         logger.info(f"✅ Governance check complete: {response.status}")
         return response

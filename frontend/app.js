@@ -129,7 +129,7 @@ function fmtMetric(v) {
 // ===================== SHARED RESULT RENDERING (governance response) =====================
 
 function renderGovernanceResponse(container, data) {
-  const biasEntries = Object.entries(data.bias_metrics || {});
+  const biasEntries = Object.entries(normalizeBiasMetrics(data));
 
   let html = '';
 
@@ -184,6 +184,109 @@ function renderGovernanceResponse(container, data) {
   container.innerHTML = html;
 }
 
+// ===================== STATUS RENDERING =====================
+
+function renderStatusResponse(container, data) {
+  if (data.status === 'no_data') {
+    container.innerHTML = `<div class="result-loading">${escapeHtml(data.message || 'No data yet.')}</div>`;
+    return;
+  }
+
+  let html = '';
+
+  if (data.model_id) {
+    // Per-model status: { status, cloud_provider, model_id, last_check, metrics: {...} }
+    const m = data.metrics || {};
+    html += `
+      <div class="section-label">${escapeHtml(data.model_id)}</div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Disparate Impact</div>
+          <div class="metric-value">${fmtMetric(m.disparate_impact)}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Statistical Parity Diff</div>
+          <div class="metric-value">${fmtMetric(m.statistical_parity_diff)}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Equalized Odds</div>
+          <div class="metric-value">${fmtMetric(m.equalized_odds)}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Status</div>
+          <div class="metric-value"><span class="badge ${statusBadgeClass(m.status)}">${escapeHtml(m.status || 'unknown')}</span></div>
+        </div>
+      </div>
+      <p class="hint">Last check: ${data.last_check ? escapeHtml(data.last_check) : '—'}</p>
+    `;
+  } else {
+    // Overall latest run: { status, cloud_provider, last_check, models_discovered, execution_time_ms }
+    html += `
+      <div class="section-label">${escapeHtml(data.cloud_provider || '')} — latest run</div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-label">Run Status</div>
+          <div class="metric-value"><span class="badge ${statusBadgeClass(data.status)}">${escapeHtml(data.status || 'unknown')}</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Models Discovered</div>
+          <div class="metric-value">${data.models_discovered ?? '—'}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Execution Time</div>
+          <div class="metric-value">${data.execution_time_ms != null ? `${data.execution_time_ms} ms` : '—'}</div>
+        </div>
+      </div>
+      <p class="hint">Last check: ${data.last_check ? escapeHtml(data.last_check) : '—'}</p>
+    `;
+  }
+
+  html += `<details class="raw-json"><summary>Raw response</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>`;
+  container.innerHTML = html;
+}
+
+// ===================== REPORT RENDERING =====================
+
+function complianceBadgeClass(status) {
+  const s = (status || '').toLowerCase();
+  if (s === 'compliant') return 'badge-ok';
+  if (s === 'partial') return 'badge-warning';
+  if (s === 'non_compliant') return 'badge-critical';
+  return 'badge-unknown';
+}
+
+function renderReportResponse(container, data) {
+  let html = `
+    <div class="section-label">${escapeHtml(data.cloud_provider || 'All providers')}${data.model_id ? ' — ' + escapeHtml(data.model_id) : ''}</div>
+    <p class="hint">Period: ${escapeHtml(data.period || '—')}</p>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Compliance</div>
+        <div class="metric-value"><span class="badge ${complianceBadgeClass(data.compliance_status)}">${escapeHtml(data.compliance_status || 'unknown')}</span></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Checks Performed</div>
+        <div class="metric-value">${data.checks_performed ?? '—'}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Violations Found</div>
+        <div class="metric-value">${data.violations_found ?? '—'}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Violations Resolved</div>
+        <div class="metric-value">${data.violations_resolved ?? '—'}</div>
+      </div>
+    </div>
+  `;
+
+  if ((data.regulations_covered || []).length > 0) {
+    html += `<p class="hint">Regulations covered: ${data.regulations_covered.map(escapeHtml).join(', ')}</p>`;
+  }
+
+  html += `<details class="raw-json"><summary>Raw response</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>`;
+  container.innerHTML = html;
+}
+
 // ===================== UPLOAD TAB =====================
 
 const dropzone = $('dropzone');
@@ -203,7 +306,13 @@ dropzone.ondrop = (e) => {
   if (e.dataTransfer.files[0]) setSelectedFile(e.dataTransfer.files[0]);
 };
 
-function setSelectedFile(file) {
+// ===================== COLUMN PICKER (Upload tab) =====================
+// Lets the user pick whatever their CSV actually calls the target/sensitive
+// columns, instead of forcing them to pre-rename to 'prediction'/'group'.
+// We rename client-side before upload, so the backend contract
+// (POST /governance/analyze-csv expects literal 'prediction'/'group') never changes.
+
+async function setSelectedFile(file) {
   if (!file.name.endsWith('.csv')) {
     $('dropzoneText').textContent = 'That\'s not a .csv file — try again';
     return;
@@ -211,19 +320,74 @@ function setSelectedFile(file) {
   selectedFile = file;
   $('dropzoneText').textContent = `Selected: ${file.name}`;
   dropzone.classList.add('has-file');
+
+  const text = await file.text();
+  const firstLine = text.split(/\r?\n/)[0];
+  const cols = firstLine.split(',').map(c => c.trim().replace(/"/g, ''));
+
+  const targetSel = $('targetColSel');
+  const sensitiveSel = $('sensitiveColSel');
+  const actualSel = $('actualLabelColSel');
+
+  targetSel.innerHTML = '';
+  sensitiveSel.innerHTML = '';
+  actualSel.innerHTML = '<option value="">(none)</option>';
+
+  cols.forEach(col => {
+    targetSel.add(new Option(col, col));
+    sensitiveSel.add(new Option(col, col));
+    actualSel.add(new Option(col, col));
+  });
+
+  // Best-effort guesses, same idea as EquiLens's detectColumns
+  const targetGuess = cols.find(c => ['prediction','hired','approved','outcome','label','target','decision','income'].includes(c.toLowerCase()));
+  const sensitiveGuess = cols.find(c => ['group','gender','race','age','sex','ethnicity'].includes(c.toLowerCase()));
+  const actualGuess = cols.find(c => ['actual_label','actual','ground_truth'].includes(c.toLowerCase()));
+
+  if (targetGuess) targetSel.value = targetGuess;
+  if (sensitiveGuess) sensitiveSel.value = sensitiveGuess;
+  if (actualGuess) actualSel.value = actualGuess;
+
+  $('columnPickers').style.display = 'flex';
   uploadBtn.disabled = false;
+}
+
+function renameCsvHeader(csvText, renameMap) {
+  // Only touches the header line — renameMap: { originalColName: canonicalName }
+  const lines = csvText.split(/\r?\n/);
+  const header = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+  const newHeader = header.map(h => renameMap[h] || h);
+  lines[0] = newHeader.join(',');
+  return lines.join('\n');
 }
 
 uploadBtn.onclick = async () => {
   if (!selectedFile) return;
+
+  const targetCol = $('targetColSel').value;
+  const sensitiveCol = $('sensitiveColSel').value;
+  const actualCol = $('actualLabelColSel').value;
+
+  if (!targetCol || !sensitiveCol) {
+    renderError($('uploadResult'), new Error('Select both a target column and a sensitive attribute column.'));
+    return;
+  }
+
   const container = $('uploadResult');
   renderLoading(container, 'Uploading and analyzing…');
   uploadBtn.disabled = true;
 
-  const formData = new FormData();
-  formData.append('file', selectedFile);
-
   try {
+    const originalText = await selectedFile.text();
+    const renameMap = { [targetCol]: 'prediction', [sensitiveCol]: 'group' };
+    if (actualCol) renameMap[actualCol] = 'actual_label';
+
+    const renamedText = renameCsvHeader(originalText, renameMap);
+    const renamedBlob = new Blob([renamedText], { type: 'text/csv' });
+
+    const formData = new FormData();
+    formData.append('file', renamedBlob, selectedFile.name);
+
     const data = await apiCall('/governance/analyze-csv', { method: 'POST', body: formData });
     renderGovernanceResponse(container, data);
   } catch (err) {
@@ -233,6 +397,23 @@ uploadBtn.onclick = async () => {
   }
 };
 
+// Connect mode (/governance/check) returns bias_metrics already keyed by model_id:
+//   { "endpoint/AllTraffic": { disparate_impact, statistical_parity_diff, ... } }
+// CSV mode (/governance/analyze-csv) returns the flat, un-nested metrics directly:
+//   { disparate_impact, statistical_parity_diff, equalized_odds, status, ... }
+// Detect the flat shape and wrap it so downstream rendering only ever has to
+// handle one shape: { model_id: { ...metrics } }.
+function normalizeBiasMetrics(data) {
+  const bm = data.bias_metrics || {};
+  const looksFlat = ('disparate_impact' in bm) || ('statistical_parity_diff' in bm);
+  if (looksFlat) {
+    const modelId =
+      (data.discovered_models && data.discovered_models[0] && data.discovered_models[0].id) ||
+      'csv_upload';
+    return { [modelId]: bm };
+  }
+  return bm;
+}
 // ===================== CONNECT TAB =====================
 
 $('connectBtn').onclick = async () => {
@@ -271,7 +452,6 @@ $('connectBtn').onclick = async () => {
 };
 
 // ===================== HISTORY TAB =====================
-
 $('statusBtn').onclick = async () => {
   const container = $('historyResult');
   const cloud = $('histCloud').value.trim() || 'aws';
@@ -283,7 +463,7 @@ $('statusBtn').onclick = async () => {
   renderLoading(container, 'Fetching status…');
   try {
     const data = await apiCall(`/governance/status${q}`);
-    container.innerHTML = `<pre style="background:#0b0d12;border:1px solid #232734;padding:14px;border-radius:8px;font-size:12px;white-space:pre-wrap;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+    renderStatusResponse(container, data);
   } catch (err) {
     renderError(container, err);
   }
@@ -299,7 +479,7 @@ $('reportBtn').onclick = async () => {
   renderLoading(container, 'Fetching report…');
   try {
     const data = await apiCall(`/governance/report${q}`);
-    container.innerHTML = `<pre style="background:#0b0d12;border:1px solid #232734;padding:14px;border-radius:8px;font-size:12px;white-space:pre-wrap;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+    renderReportResponse(container, data);
   } catch (err) {
     renderError(container, err);
   }

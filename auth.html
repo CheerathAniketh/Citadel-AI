@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Citadel AI — Get JWT (throwaway)</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0b0d12;
+    color: #e8e9ec;
+    max-width: 720px;
+    margin: 60px auto;
+    padding: 0 20px;
+  }
+  h1 { font-size: 18px; }
+  button {
+    background: #4285F4;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { background: #3367d6; }
+  #signout {
+    background: transparent;
+    border: 1px solid #333;
+    color: #8b8f9c;
+  }
+  pre {
+    background: #14171e;
+    border: 1px solid #232734;
+    padding: 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  label { display: block; font-size: 12px; color: #8b8f9c; margin: 20px 0 6px; }
+  input {
+    width: 100%;
+    background: #0b0d12;
+    border: 1px solid #232734;
+    color: #e8e9ec;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    box-sizing: border-box;
+  }
+  .expiry { font-size: 12px; color: #fbbf24; margin-top: 6px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Citadel AI — throwaway JWT grabber</h1>
+<p style="color:#8b8f9c; font-size:13px;">
+  Not part of the product. Sign in with Google, get a real Supabase JWT, copy a ready curl command.
+  Token expires in ~1 hour (Supabase default) — you'll need to re-sign-in after that.
+</p>
+
+<div id="signedOut">
+  <button id="signinBtn">Sign in with Google</button>
+</div>
+
+<div id="signedIn" class="hidden">
+  <p>Signed in as <strong id="email"></strong> <button id="signout">Sign out</button></p>
+
+  <label>Access token (JWT)</label>
+  <pre id="token"></pre>
+  <p class="expiry" id="expiry"></p>
+
+  <label>API base URL</label>
+  <input id="apiBase" value="http://localhost:8000/api/v1" />
+
+  <label>Endpoint</label>
+  <input id="endpoint" value="/governance/status?cloud_provider=aws" />
+
+  <label>curl command</label>
+  <pre id="curl"></pre>
+</div>
+
+<script>
+  // Same config as the real frontend's config.js.
+  const SUPABASE_URL = "https://qxsyscrbnbrzzvctozht.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF4c3lzY3JibmJyenp2Y3Rvemh0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MDA2MDAsImV4cCI6MjA5OTk3NjYwMH0.PEfXTGNi1CXsAu_dZiYsixo0hb3urzh-s6a8haGX8LA";
+
+  // Renamed to avoid the exact collision the README already flagged:
+  // window.supabase (the CDN global) vs a locally-declared `const supabase`.
+  const sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const $ = (id) => document.getElementById(id);
+
+  function buildCurl(token) {
+    const base = $('apiBase').value.replace(/\/$/, '');
+    const path = $('endpoint').value;
+    return `curl -H "Authorization: Bearer ${token}" "${base}${path}"`;
+  }
+
+  function renderSignedIn(session) {
+    $('signedOut').classList.add('hidden');
+    $('signedIn').classList.remove('hidden');
+    $('email').textContent = session.user.email;
+    $('token').textContent = session.access_token;
+
+    const expiresAt = new Date(session.expires_at * 1000);
+    $('expiry').textContent = `Expires: ${expiresAt.toLocaleString()} (token TTL is set by Supabase, default 1hr)`;
+
+    const updateCurl = () => { $('curl').textContent = buildCurl(session.access_token); };
+    updateCurl();
+    $('apiBase').oninput = updateCurl;
+    $('endpoint').oninput = updateCurl;
+  }
+
+  async function checkSession() {
+    const { data } = await sbClient.auth.getSession();
+    if (data.session) {
+      renderSignedIn(data.session);
+    } else {
+      $('signedOut').classList.remove('hidden');
+      $('signedIn').classList.add('hidden');
+    }
+  }
+
+  $('signinBtn').onclick = async () => {
+    await sbClient.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.href }
+    });
+  };
+
+  $('signout').onclick = async () => {
+    await sbClient.auth.signOut();
+    checkSession();
+  };
+
+  checkSession();
+</script>
+
+</body>
+</html>

@@ -523,6 +523,37 @@ Aniketh solo today (Akanksha busy) — backend hardening + frontend, both now An
 FastAPI · LangGraph · LangChain · boto3 (AWS) · Supabase (Postgres, Auth) · SHAP · scikit-learn · pandas · React/Next.js frontend
 
 ---
+## 📅 Aug 17 — Session log
+
+Frontend + backend hardening, both modes now fully verified end-to-end through the actual UI (not just curl).
+
+### ✅ Upload-mode screen — column picker added
+- CSV upload no longer requires the file to already have literal `prediction`/`group` columns. On file select, the frontend reads the header row and shows dropdowns (Target column, Sensitive column, optional Actual label column) so the user maps their real column names.
+- On submit, only the header line is rewritten client-side to the canonical names (`prediction`/`group`/`actual_label`) before upload — the backend contract for `POST /governance/analyze-csv` is untouched, no backend changes needed for this.
+- Verified against `true_unbiased.csv` (real columns: `hired`/`gender`) end-to-end through the UI: DI=0.976, SPD=0.013, status `low`, matches CLI-tested numbers from Aug 13.
+
+### ✅ Backend — bias_metrics response shape unified across both routes
+- Found and fixed a real divergence: `/governance/check` explicitly reshaped its raw workflow output into `{ model_id: { disparate_impact, ... } }` before returning, but `/governance/analyze-csv` just returned the raw, flat `bias_metrics` dict as-is — no reshaping, no `response_model` at all. Different shape from the same underlying workflow state.
+- This caused a real frontend crash (`Cannot read properties of null (reading 'disparate_impact')`) the first time CSV upload was tested through the actual UI rather than curl — worth noting as a case where curl-only testing missed a real bug that UI testing caught immediately.
+- Fixed properly, not patched: extracted the reshaping logic into a single `build_governance_response(final_state) -> GovernanceCheckResponse` function in `governance.py`. Both `/governance/check` and `/governance/analyze-csv` now call this one function and both have `response_model=GovernanceCheckResponse`, so FastAPI validates the shape at the boundary for both. The two routes are now structurally incapable of diverging again — there's exactly one place that builds this response.
+- Verified end-to-end through the UI post-fix: both Upload mode (`true_unbiased.csv`) and Connect mode (`citadel-biased-hiring-endpoint`, real STS AssumeRole → real S3 Data Capture → DI=0.00, SPD=0.369, `high` status, critical alert, 3 remediation recommendations) render correctly with identical rendering code (`renderGovernanceResponse` in `app.js`).
+
+### ✅ Connect-mode screen — verified fully working through real UI
+- AWS account ID / region / IAM role ARN form → `POST /governance/check` → real STS AssumeRole → real endpoint discovery → real S3 predictions → EquiLens bias analysis → alerts + recommendations, all rendering correctly with color-coded badges.
+
+### ✅ Status & Reports tab — real rendering instead of raw JSON
+- `/governance/status` and `/governance/report` responses now render as proper metric cards + badges (`renderStatusResponse`, `renderReportResponse` in `app.js`), matching the visual language of the other two tabs, instead of dumping a `<pre>` JSON blob. Raw JSON still available via a collapsible `<details>` for debugging.
+
+### 🐛 Bugs hit + fixed today
+- `backend/.env` had two keys (`SUPABASE_ANON_KEY`, `JWT_1HR_TOKEN`) that `config.py`'s `Settings` class doesn't declare — pydantic-settings' strict validation (`extra_forbidden`) rejected them on startup with `ValidationError`. Neither belonged in the backend's `.env` in the first place: `SUPABASE_ANON_KEY` is a frontend-only value (already lives in `frontend/config.js`), and `JWT_1HR_TOKEN` was leftover scratch data from manual curl testing, not real config. Fixed by removing both lines from `.env`.
+- CSV upload column-mismatch error (`missing required column(s)`) is still a plain string, not routed through `_resolve_columns()`'s `available_columns`/`did_you_mean` suggestions — the hard-fail check in the `/analyze-csv` route runs *before* `run_csv_governance_check()` is ever called, so `_resolve_columns()` never gets a chance to fire. Not fixed yet (frontend's new column picker sidesteps needing it right now), but flagged so it doesn't get lost.
+
+### 🔧 New dev tool
+- `get-jwt.html` — throwaway page (not part of the product) for grabbing a real Supabase JWT via Google sign-in and generating a ready-to-use `curl` command against any backend endpoint. Useful for backend testing without going through the full frontend flow. Requires the serving origin to be in both Supabase's Redirect URLs allowlist and the backend's `ALLOWED_ORIGINS`.
+
+### 🔍 Not yet fixed (flagged, not urgent)
+- Same `/analyze-csv` known rough edge as before: CSV mode always pools into one synthetic model, so `bias_metrics` is always singular. Not a bug for CSV mode specifically, just worth remembering if Connect mode ever discovers multiple real endpoints (see Aug 8 log — still an open, conscious tradeoff).
+---
 
 ## 📄 License
 

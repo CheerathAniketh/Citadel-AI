@@ -40,13 +40,31 @@
     <!-- ---------- UPLOAD TAB ---------- -->
     <section id="tab-upload" class="tab-panel active">
       <h1>Upload-mode audit</h1>
-      <p class="hint">CSV must include <code>prediction</code> and <code>group</code> columns. Optional <code>actual_label</code> enables Equalized Odds.</p>
+      <p class="hint">Pick your target and sensitive columns below — no need to pre-rename your CSV.</p>
 
       <div class="panel">
         <label class="dropzone" id="dropzone">
           <input type="file" id="csvInput" accept=".csv" hidden />
           <span id="dropzoneText">Click to choose a CSV, or drag one here</span>
         </label>
+
+        <div class="field-row" id="columnPickers" style="display:none;">
+          <div class="field">
+            <label>Target / outcome column</label>
+            <select class="sel" id="targetColSel"></select>
+          </div>
+          <div class="field">
+            <label>Sensitive attribute column</label>
+            <select class="sel" id="sensitiveColSel"></select>
+          </div>
+          <div class="field">
+            <label>Actual label (optional, enables EOD)</label>
+            <select class="sel" id="actualLabelColSel">
+              <option value="">(none)</option>
+            </select>
+          </div>
+        </div>
+
         <button id="uploadBtn" class="btn-primary" disabled>Run audit</button>
       </div>
 

@@ -11,6 +11,19 @@
   --radius: 8px;
 }
 
+select.sel {
+  width: 100%;
+  background: #0b0d12;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  padding: 9px 11px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+select.sel:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 * { box-sizing: border-box; }
 
 body {
