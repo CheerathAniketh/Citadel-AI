@@ -6,7 +6,7 @@ from app.workflows.state import CitadelState
 from app.integrations.aws_connector import AWSConnector
 from app.modules.bias import analyzer as bias_analyzer
 from app.db import insert_audit_run, upsert_model, insert_bias_metrics, insert_alert
-
+from app.modules.bias import explainer as bias_explainer
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +328,40 @@ async def remediate(state: CitadelState) -> CitadelState:
         state['remediation_error'] = str(e)
         state['audit_log'].append(error_msg)
     
+    return state
+
+
+
+
+# ==================== EXPLANATION NODE ====================
+async def explain_results(state: CitadelState) -> CitadelState:
+    """
+    Step 5.5: Generate a plain-English explanation of the bias findings via Gemini.
+    Runs regardless of remediation status, so the report always has a summary.
+    """
+    if not state.get('bias_metrics'):
+        state['audit_log'].append("⚠️ No bias metrics to explain")
+        return state
+
+    try:
+        logger.info("🗣️ Generating plain-English explanation...")
+        state['audit_log'].append("📍 Explanation started")
+
+        explanation = bias_explainer.explain_results(
+            state['bias_metrics'],
+            state.get('root_causes', {})
+        )
+        state['plain_explanation'] = explanation
+        state['audit_log'].append("✅ Explanation generated")
+
+        logger.info("✅ Explanation complete")
+
+    except Exception as e:
+        error_msg = f"❌ Explanation failed: {str(e)}"
+        logger.error(error_msg)
+        state['plain_explanation'] = None
+        state['audit_log'].append(error_msg)
+
     return state
 
 # ==================== ALERTING NODE ====================

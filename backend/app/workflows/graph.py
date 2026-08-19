@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 from app.workflows.nodes import (
     discover_models, monitor_predictions, analyze_bias, detect_violation,
-    remediate, alert, complete_workflow, ingest_csv  # add ingest_csv
+    remediate, alert, complete_workflow, ingest_csv, explain_results # add ingest_csv
 )
 import pandas as pd
 
@@ -49,6 +49,7 @@ async def run_csv_governance_check(user_id: str, filename: str, df: pd.DataFrame
         state = await analyze_bias(state)
         state = await detect_violation(state)
         state = await remediate(state)
+        state = await explain_results(state)
         state = await alert(state)
         state = await complete_workflow(state)
 
@@ -61,6 +62,7 @@ async def run_csv_governance_check(user_id: str, filename: str, df: pd.DataFrame
             "violations": state.get('alerts', []),
             "alerts": state.get('alerts', []),
             "recommended_fixes": state.get('recommended_fixes', []),
+            "plain_explanation": state.get('plain_explanation'),
             "audit_log": state.get('audit_log', []),
             "workflow_end_time": state.get('workflow_end_time'),
             "execution_time_ms": state.get('total_execution_time_ms'),
@@ -97,6 +99,7 @@ def create_governance_graph():
     workflow.add_node("analyze", analyze_bias)
     workflow.add_node("detect", detect_violation)
     workflow.add_node("remediate", remediate)
+    workflow.add_node("explain", explain_results) 
     workflow.add_node("alert", alert)
     workflow.add_node("complete", complete_workflow)
     
@@ -105,7 +108,8 @@ def create_governance_graph():
     workflow.add_edge("monitor", "analyze")
     workflow.add_edge("analyze", "detect")
     workflow.add_edge("detect", "remediate")
-    workflow.add_edge("remediate", "alert")
+    workflow.add_edge("remediate", "explain")
+    workflow.add_edge("explain", "alert")   
     workflow.add_edge("alert", "complete")
     
     # Set starting node

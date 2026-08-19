@@ -160,7 +160,12 @@ function renderGovernanceResponse(container, data) {
       </div>
     `;
   });
-
+  if (data.plain_explanation) {
+    html += `
+      <div class="section-label">What this means</div>
+      <div class="explanation-box">${escapeHtml(data.plain_explanation)}</div>
+    `;
+  }
   if ((data.alerts || []).length > 0) {
     html += `<div class="section-label">Alerts</div>`;
     data.alerts.forEach(a => {

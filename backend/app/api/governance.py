@@ -79,6 +79,7 @@ def build_governance_response(final_state: dict) -> GovernanceCheckResponse:
         },
         alerts=alerts,
         recommendations=recommendations,
+        plain_explanation=final_state.get('plain_explanation'),
         audit_log=final_state.get('audit_log', []),
         timestamp=response_timestamp
     )

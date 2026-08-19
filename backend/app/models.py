@@ -107,6 +107,7 @@ class GovernanceCheckResponse(BaseModel):
     bias_metrics: Dict[str, BiasMetricsResponse]
     alerts: List[AlertResponse]
     recommendations: List[RecommendationResponse]
+    plain_explanation: Optional[str] = None
     audit_log: List[str]
     timestamp: datetime
 

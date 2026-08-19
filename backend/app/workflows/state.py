@@ -24,7 +24,8 @@ class CitadelState(TypedDict, total=False):
     
     # ==================== Analysis Phase ====================
     bias_metrics: Dict[str, Any]  # {disparate_impact, spd, equalized_odds, ...}
-    root_causes: Dict[str, Any]  # SHAP explanations
+    root_causes: Dict[str, Any] #shap explainations
+    plain_explanation: Optional[str]
     analysis_error: Optional[str]
     
     # ==================== Detection Phase ====================
