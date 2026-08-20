@@ -193,6 +193,7 @@ async def run_governance_check(
             "violations": final_state.get('alerts', []),
             "alerts": final_state.get('alerts', []),
             "recommended_fixes": final_state.get('recommended_fixes', []),
+            "plain_explanation":final_state.get('plain_explanation'),
             "audit_log": final_state.get('audit_log', []),
             "workflow_end_time": final_state.get('workflow_end_time'),
             "execution_time_ms": final_state.get('total_execution_time_ms'),
