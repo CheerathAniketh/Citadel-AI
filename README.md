@@ -59,8 +59,4 @@ uvicorn main:app --reload
 
 - Cross-account AWS access is untested; it needs a second AWS account.
 - There is no hosted demo at the moment.
-- Counterfactual fairness testing and Slack/Jira alerting are not implemented.
-
-## Background
-
-Started as a hackathon project.
+- Counterfactual fairness testing is not implemented.
